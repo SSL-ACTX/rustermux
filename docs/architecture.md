@@ -4,9 +4,10 @@ This document explains the technical architecture, design decisions, and mechani
 
 ## 1. Why Use the GNU Host Toolchain?
 
-Android's default system libraries (Bionic `libc`) differ significantly from standard Linux libraries (GNU `libc` or `glibc`). While Android-targeted binaries can run natively on Android devices, compiling Rust *on* the device (host compilation) requires toolchains that are not easily built or distributed for the Bionic environment. 
+Android's default system libraries (Bionic `libc`) differ significantly from standard Linux libraries (GNU `libc` or `glibc`). While Android-targeted binaries can run natively on Android devices, compiling Rust *on* the device (host compilation) requires toolchains that are not easily built or distributed for the Bionic environment.
 
 By targeting `aarch64-unknown-linux-gnu` as the host toolchain:
+
 - We can download and run official, pre-compiled Rust compiler toolchains (`rustc`, `cargo`, `rustup`) directly.
 - We avoid compiling the Rust compiler itself from source, which is extremely resource-intensive.
 - We leverage Termux's high-quality Glibc package repository (`glibc-repo`).
@@ -14,6 +15,7 @@ By targeting `aarch64-unknown-linux-gnu` as the host toolchain:
 ## 2. Why Avoid Android Host Toolchains?
 
 Standard host-targeted compiler suites assume a Linux FHS (Filesystem Hierarchy Standard) environment.
+
 - Android lacks standard paths like `/lib`, `/usr/bin`, and `/etc`.
 - Termux targets Bionic libc, which lacks support for features like `pthread_cancel` or certain dynamic linking properties expected by modern build tools, causing compiler plugins, proc-macros, and cargo subcommands to fail or panic.
 - Many crates compile custom build scripts (`build.rs`) using the host compiler. If the host compiler is Bionic, compiling these helper tools becomes extremely fragile.
@@ -40,6 +42,7 @@ graph TD
 ## 4. Hook Investigation & Alternatives
 
 We investigated if there are cleaner alternatives to intercepting the `rustup` binary via a custom script in `~/.cargo/bin/rustup`:
+
 - **Shell Aliases/Functions**: Setting `alias rustup='...'` works only in interactive shell environments. Subshells, build scripts, editor LSP servers (like Rust Analyzer), and cargo plugins would bypass the alias and launch the raw glibc binary directly, causing instant crashes due to `LD_PRELOAD` conflicts.
 - **Upstream Hooks**: Rustup currently does not support any native client-side config hooks (e.g. `post-update` or `post-install` hooks).
 - **Conclusion**: The entry point wrapper script at `~/.cargo/bin/rustup` remains the only robust mechanism to intercept calls from all frontends (interactive, non-interactive, and LSP integrations) and run self-healing patches cleanly.
@@ -49,4 +52,3 @@ We investigated if there are cleaner alternatives to intercepting the `rustup` b
 - **aarch64 (64-bit ARM)**: Fully supported natively via Termux's official `glibc-repo`.
 - **x86_64 (64-bit Intel/AMD)**: Partially supported. Termux provides x86_64 glibc libraries, but execution requires an x86_64 host or emulator environment (e.g. inside PRoot or on x86_64 ChromeOS/Android devices).
 - **armv7 (32-bit ARM)**: Unsupported. Official Termux glibc packages do not target 32-bit ARM due to library limitations.
-

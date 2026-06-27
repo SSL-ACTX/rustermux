@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck on all shell scripts
+        run: |
+          shellcheck -S warning \
+            install.sh \
+            patch.sh \
+            wrappers/auto-patcher.sh \
+            tests/validate.sh
+
+      - name: Check wrappers (no extension, sh dialect)
+        run: |
+          shellcheck -S warning -s bash \
+            wrappers/rustup \
+            wrappers/maturin
+
+  shell-syntax:
+    name: Shell Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check all .sh files
+        run: |
+          for f in install.sh patch.sh wrappers/auto-patcher.sh tests/validate.sh; do
+            echo "Checking $f..."
+            bash -n "$f" || exit 1
+          done
+
+      - name: Syntax check wrapper scripts
+        run: |
+          for f in wrappers/rustup wrappers/maturin; do
+            echo "Checking $f..."
+            bash -n "$f" || exit 1
+          done
+
+  markdown-lint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install markdownlint-cli
+        run: npm install -g markdownlint-cli
+
+      - name: Lint Markdown files
+        run: |
+          markdownlint \
+            README.md \
+            docs/architecture.md \
+            docs/usage.md \
+            docs/troubleshooting.md \
+            --config .markdownlint.json

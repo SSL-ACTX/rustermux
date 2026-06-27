@@ -8,6 +8,7 @@ echo "=== Running Rustermux Verification Suite ==="
 # Source the cargo environment
 if [ -f ~/.cargo/env ]; then
     echo "Sourcing ~/.cargo/env..."
+    # shellcheck source=/dev/null
     . ~/.cargo/env
 else
     echo "Warning: ~/.cargo/env not found, using current environment."

@@ -106,20 +106,19 @@ CARGO_ENV="$CARGO_BIN/env"
 touch "$CARGO_ENV"
 
 # Update ~/.cargo/env if not already present
-if ! grep -q "GLIBC_PREFIX" "$CARGO_ENV" 2>/dev/null; then
+# NOTE: We intentionally do NOT add $GLIBC_PREFIX/bin to PATH.
+# The glibc coreutils (mv, wc, tail, find, etc.) in that directory shadow
+# native Termux tools. Since libc.so there is a GNU linker script (not an ELF),
+# those glibc-linked binaries crash at startup with "invalid ELF header".
+# The wrappers (rustup, maturin) set GLIBC_PREFIX internally when needed.
+if ! grep -q "Termux Glibc userland integration" "$CARGO_ENV" 2>/dev/null; then
     cat << 'EOF' >> "$CARGO_ENV"
 
 # Termux Glibc userland integration
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
-
-case ":${PATH}:" in
-    *:"$GLIBC_PREFIX/bin":*)
-        ;;
-    *)
-        export PATH="$GLIBC_PREFIX/bin:$PATH"
-        ;;
-esac
+# GLIBC_PREFIX/bin is intentionally NOT added to PATH to avoid glibc coreutils
+# shadowing native Termux tools (libc.so there is a linker script, not an ELF).
 EOF
     echo "Updated $CARGO_ENV"
 fi

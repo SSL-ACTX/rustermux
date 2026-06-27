@@ -7,6 +7,7 @@ unset LD_PRELOAD
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
+export PATH="$GLIBC_PREFIX/bin:$PATH"
 
 # Determine user's home directory
 HOME_DIR="${HOME:-/data/data/com.termux/files/home}"

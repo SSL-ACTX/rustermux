@@ -1,0 +1,29 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# wrappers/maturin - Wrapper script for maturin to run glibc binary and patch build outputs
+
+unset LD_PRELOAD
+export CARGO_INCREMENTAL=0
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+
+export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
+export PATH="$GLIBC_PREFIX/bin:$PATH"
+
+# Run the real maturin binary
+"$PREFIX/bin/maturin-real" "$@"
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+    # Automatically patch RPATH/RUNPATH of compiled Python extensions
+    find python -name "*.so" 2>/dev/null | while read -r f; do
+        if [ -f "$f" ] && [ -x "$f" ]; then
+            if file "$f" 2>/dev/null | grep -q "ELF"; then
+                patchelf --set-rpath "$PREFIX/lib" "$f" 2>/dev/null && \
+                echo "[Maturin Wrapper] Automatically patched RUNPATH of: $(basename "$f")" || true
+            fi
+        fi
+    done
+fi
+
+exit $EXIT_CODE

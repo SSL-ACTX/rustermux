@@ -1,0 +1,79 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# wrappers/rustup - Entry point wrapper for rustup with post-exec hook.
+
+# Prevent LD_PRELOAD conflicts (e.g. libtermux-exec.so)
+unset LD_PRELOAD
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
+
+# Determine user's home directory
+HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
+CARGO_HOME="${CARGO_HOME:-$HOME_DIR/.cargo}"
+RUSTUP_HOME="${RUSTUP_HOME:-$HOME_DIR/.rustup}"
+CARGO_BIN="$CARGO_HOME/bin"
+RUSTUP_REAL="$CARGO_BIN/rustup-real"
+
+# Verify prerequisites are available at runtime
+MISSING_DEPS=()
+if ! command -v patchelf >/dev/null 2>&1; then
+    MISSING_DEPS+=("patchelf-glibc")
+fi
+if ! command -v grun >/dev/null 2>&1; then
+    MISSING_DEPS+=("glibc-runner")
+fi
+RPATH="$GLIBC_PREFIX/lib"
+INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
+if [ -z "$INTERPRETER" ]; then
+    MISSING_DEPS+=("glibc")
+fi
+
+if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+    echo "ERROR: Termux Rustup Glibc wrapper is missing required dependencies: ${MISSING_DEPS[*]}" >&2
+    echo "Please run the installer again or install them manually:" >&2
+    echo "  pkg install -y glibc glibc-runner patchelf-glibc" >&2
+    echo ""
+    exit 1
+fi
+
+# Run the real rustup binary, preserving argv[0] via bash's exec -a
+bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
+EXIT_CODE=$?
+
+# Post-execution hook: Auto-patch toolchain binaries if any update/install command was run
+case "$*" in
+    *update*|*install*|*add*|*default*|*toolchain*)
+        echo "Post-execution hook: Auto-patching toolchain binaries..."
+        
+        # If the binary patcher script is available in the cargo bin, use it
+        if [ -f "$CARGO_BIN/patch.sh" ]; then
+            while read -r toolchain_dir; do
+                if [ -d "$toolchain_dir" ]; then
+                    "$CARGO_BIN/patch.sh" "$toolchain_dir"
+                fi
+            done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
+        else
+            # Fallback inline patching logic if patch.sh is not found
+            PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+            GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+            RPATH="$GLIBC_PREFIX/lib"
+            INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
+            INTERPRETER="${INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
+            
+            while read -r toolchain_dir; do
+                for f in "$toolchain_dir"/*; do
+                    if [ -f "$f" ] && [ -x "$f" ]; then
+                        if file "$f" 2>/dev/null | grep -q "ELF" && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
+                            patchelf --set-interpreter "$INTERPRETER" \
+                                     --set-rpath "$RPATH" \
+                                     "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true
+                        fi
+                    fi
+                done
+            done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
+        fi
+        ;;
+esac
+
+exit $EXIT_CODE

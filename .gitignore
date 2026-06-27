@@ -1,0 +1,14 @@
+# gitignore - Rustup Termux
+
+# Logs
+*.log
+
+# Editor backup/swap files
+*~
+*.swp
+.DS_Store
+
+# Temporary build folders
+tmp/
+dist/
+build/

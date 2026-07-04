@@ -6,6 +6,9 @@ set -e
 # Get the absolute path of the directory containing this script before any cd
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# GitHub Raw Content base URL (for downloading files in remote-execution/pipe mode)
+GITHUB_RAW_URL="${GITHUB_RAW_URL:-https://raw.githubusercontent.com/SSL-ACTX/rustermux/main}"
+
 # Configurable variables
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
@@ -77,17 +80,31 @@ mkdir -p "$CARGO_BIN_DIR"
 cp rustup-init-gnu "$CARGO_BIN_DIR/rustup-real"
 rm -f rustup-init-gnu
 
-# 5. Copy scripts to target destination
+# 5. Copy or download scripts to target destination
 echo "Step 5: Installing patch.sh and wrappers..."
-cp "$SCRIPT_DIR/patch.sh" "$CARGO_BIN_DIR/patch.sh"
-chmod +x "$CARGO_BIN_DIR/patch.sh"
 
-# Install wrappers
-cp "$SCRIPT_DIR/wrappers/rustup" "$CARGO_BIN_DIR/rustup"
-chmod +x "$CARGO_BIN_DIR/rustup"
+# Helper function to copy or download a file
+install_file() {
+    local src_rel_path="$1"
+    local dest_path="$2"
+    
+    if [ -f "$SCRIPT_DIR/$src_rel_path" ]; then
+        echo "Copying local $src_rel_path..."
+        cp "$SCRIPT_DIR/$src_rel_path" "$dest_path"
+    else
+        local download_url="$GITHUB_RAW_URL/$src_rel_path"
+        echo "Downloading $src_rel_path from $download_url..."
+        if ! curl -sSf "$download_url" -o "$dest_path"; then
+            echo "Error: Failed to download $src_rel_path from $download_url" >&2
+            exit 1
+        fi
+    fi
+    chmod +x "$dest_path"
+}
 
-cp "$SCRIPT_DIR/wrappers/auto-patcher.sh" "$CARGO_BIN_DIR/auto-patcher.sh"
-chmod +x "$CARGO_BIN_DIR/auto-patcher.sh"
+install_file "patch.sh" "$CARGO_BIN_DIR/patch.sh"
+install_file "wrappers/rustup" "$CARGO_BIN_DIR/rustup"
+install_file "wrappers/auto-patcher.sh" "$CARGO_BIN_DIR/auto-patcher.sh"
 
 # 6. Patch the initial suite
 echo "Step 6: Patching initial binaries..."

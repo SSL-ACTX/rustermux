@@ -11,6 +11,9 @@
 [![CI](https://github.com/SSL-ACTX/rustermux/actions/workflows/ci.yml/badge.svg)](https://github.com/SSL-ACTX/rustermux/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/SSL-ACTX/rustermux)
 
+<img src="https://github.com/SSL-ACTX/cdn_purposes/raw/refs/heads/main/demo.gif" width="200" alt="demo">
+<p align="center"><i>Demo</i></p>
+
 </div>
 
 > [!WARNING]

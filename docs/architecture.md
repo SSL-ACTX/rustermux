@@ -25,12 +25,19 @@ Standard host-targeted compiler suites assume a Linux FHS (Filesystem Hierarchy 
 To execute GNU binaries natively inside Termux's Bionic environment, we use a hybrid model:
 
 ```mermaid
-graph TD
-    A[Bionic / Termux Shell] -->|Invoke rustup| B[~/.cargo/bin/rustup Wrapper]
-    B -->|Unsets LD_PRELOAD| C[~/.cargo/bin/rustup-real ELF]
-    C -->|Dynamic Linker| D[/usr/glibc/lib/ld-linux-aarch64.so.1]
-    D -->|Loads Glibc Libraries| E[/usr/glibc/lib/libc.so.6]
-    C -->|Executes rustc / cargo| F[Toolchain compilers]
+flowchart TD
+    A["Bionic / Termux Shell"]
+    B["~/.cargo/bin/rustup Wrapper"]
+    C["~/.cargo/bin/rustup-real ELF"]
+    D["/usr/glibc/lib/ld-linux-aarch64.so.1"]
+    E["/usr/glibc/lib/libc.so.6"]
+    F["Toolchain compilers"]
+
+    A -->|Invoke rustup| B
+    B -->|Unsets LD_PRELOAD| C
+    C -->|Dynamic Linker| D
+    D -->|Loads Glibc Libraries| E
+    C -->|Executes rustc / cargo| F
     F -->|Patched with RPATH| E
 ```
 

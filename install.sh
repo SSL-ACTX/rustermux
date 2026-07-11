@@ -147,6 +147,7 @@ if [ ! -f "$CARGO_CONFIG" ]; then
     cat << EOF > "$CARGO_CONFIG"
 [build]
 target = "aarch64-linux-android"
+incremental = false
 
 [target.aarch64-linux-android]
 linker = "$PREFIX/bin/clang"

@@ -160,7 +160,7 @@ echo "Step 8: Adding auto-patcher to shell profiles..."
 for rc in "$HOME_DIR/.bashrc" "$HOME_DIR/.zshrc"; do
     if [ -f "$rc" ]; then
         if ! grep -q "auto-patcher.sh" "$rc" 2>/dev/null; then
-            echo '[ -f ~/.cargo/bin/auto-patcher.sh ] && ~/.cargo/bin/auto-patcher.sh &>/dev/null &' >> "$rc"
+            echo '( [ -f ~/.cargo/bin/auto-patcher.sh ] && ~/.cargo/bin/auto-patcher.sh &>/dev/null & )' >> "$rc"
             echo "Added auto-patcher to $rc"
         fi
     fi

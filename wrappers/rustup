@@ -65,7 +65,7 @@ case "$*" in
             while read -r toolchain_dir; do
                 for f in "$toolchain_dir"/*; do
                     if [ -f "$f" ] && [ -x "$f" ]; then
-                        if file "$f" 2>/dev/null | grep -q "ELF" && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
+                        if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
                             patchelf --set-interpreter "$INTERPRETER" \
                                      --set-rpath "$RPATH" \
                                      "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true

@@ -66,7 +66,7 @@ BINARIES=(
 for entry in "${BINARIES[@]}"; do
     IFS="|" read -r bin_path real_name <<< "$entry"
     if [ -f "$bin_path" ] && [ -x "$bin_path" ]; then
-        if file "$bin_path" 2>/dev/null | grep -q "ELF"; then
+        if [ "$(head -c 4 "$bin_path" 2>/dev/null)" = $'\x7fELF' ]; then
             if patchelf --print-interpreter "$bin_path" 2>/dev/null | grep -q "glibc"; then
                 dir_path=$(dirname "$bin_path")
                 real_path="$dir_path/$real_name"
@@ -84,7 +84,7 @@ EXIT_CODE=\$?
 if [ \$EXIT_CODE -eq 0 ]; then
     find python -name "*.so" 2>/dev/null | while read -r f; do
         if [ -f "\$f" ] && [ -x "\$f" ]; then
-            if file "\$f" 2>/dev/null | grep -q "ELF"; then
+            if [ "\$(head -c 4 "\$f" 2>/dev/null)" = $'\x7fELF' ]; then
                 patchelf --set-rpath "$PREFIX/lib" "\$f" 2>/dev/null && \\
                 echo "[Maturin Wrapper] Automatically patched RUNPATH of: \$(basename "\$f")" || true
             fi
@@ -105,7 +105,7 @@ RUSTUP_BIN="$CARGO_BIN_DIR/rustup"
 RUSTUP_REAL="$CARGO_BIN_DIR/rustup-real"
 
 if [ -f "$RUSTUP_BIN" ] && [ -x "$RUSTUP_BIN" ]; then
-    if file "$RUSTUP_BIN" 2>/dev/null | grep -q "ELF"; then
+    if [ "$(head -c 4 "$RUSTUP_BIN" 2>/dev/null)" = $'\x7fELF' ]; then
         # It was overwritten by self-update, rename it
         mv "$RUSTUP_BIN" "$RUSTUP_REAL"
         
@@ -189,7 +189,7 @@ case "$*" in
             while read -r toolchain_dir; do
                 for f in "$toolchain_dir"/*; do
                     if [ -f "$f" ] && [ -x "$f" ]; then
-                        if file "$f" 2>/dev/null | grep -q "ELF" && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
+                        if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
                             patchelf --set-interpreter "$INTERPRETER" \
                                      --set-rpath "$RPATH" \
                                      "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true

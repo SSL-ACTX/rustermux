@@ -145,8 +145,8 @@ MISSING_DEPS=()
 if ! command -v patchelf >/dev/null 2>&1; then
     MISSING_DEPS+=("patchelf-glibc")
 fi
-if ! command -v grun >/dev/null 2>&1; then
-    MISSING_DEPS+=("glibc-runner")
+if ! command -v grun >/dev/null 2>&1 && ! command -v qemu-arm >/dev/null 2>&1; then
+    MISSING_DEPS+=("glibc-runner or qemu-user-arm")
 fi
 RPATH="$GLIBC_PREFIX/lib"
 INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
@@ -162,9 +162,24 @@ if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     exit 1
 fi
 
-# Run the real rustup binary, preserving argv[0] via bash's exec -a
-bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
-EXIT_CODE=$?
+# Detect whether RUSTUP_REAL is 32-bit ARM or 64-bit ARM (aarch64)
+# If 32-bit ARM ELF, run through qemu-arm emulator
+ELF_CLASS=$(file -b "$RUSTUP_REAL" 2>/dev/null || echo "")
+if echo "$ELF_CLASS" | grep -q "32-bit"; then
+    if command -v qemu-arm >/dev/null 2>&1; then
+        GLIBC32_PATH="$GLIBC_PREFIX/lib32"
+        [ -d "$GLIBC32_PATH" ] || GLIBC32_PATH="$GLIBC_PREFIX"
+        qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
+        EXIT_CODE=$?
+    else
+        echo "ERROR: 32-bit ARM rustup-real requires qemu-arm (qemu-user-arm package)." >&2
+        exit 1
+    fi
+else
+    # 64-bit ARM (aarch64) - preserve argv[0] via bash's exec -a
+    bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
+    EXIT_CODE=$?
+fi
 
 # Post-execution hook: Auto-patch toolchain binaries if any update/install command was run
 case "$*" in

@@ -23,9 +23,28 @@ echo "GLIBC_PREFIX: $GLIBC_PREFIX"
 echo "HOME: $HOME_DIR"
 echo ""
 
+# Detect target architecture (aarch64 vs arm32)
+ARCH="$(uname -m)"
+if [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ]; then
+    TARGET_TRIPLE="armv7-unknown-linux-gnueabihf"
+    ANDROID_TARGET="armv7-linux-androideabi"
+    RUNNER="qemu-arm"
+    IS_ARM32=1
+    echo "Architecture: 32-bit ARM ($TARGET_TRIPLE) [EXPERIMENTAL]"
+else
+    TARGET_TRIPLE="aarch64-unknown-linux-gnu"
+    ANDROID_TARGET="aarch64-linux-android"
+    RUNNER="grun"
+    IS_ARM32=0
+    echo "Architecture: 64-bit ARM ($TARGET_TRIPLE)"
+fi
+
 # 1. Prerequisite Checks
 echo "Step 1: Checking and installing prerequisites..."
 REQUIRED_PKGS=(glibc glibc-runner patchelf-glibc binutils-glibc gcc-glibc ca-certificates-glibc curl file)
+if [ "$IS_ARM32" -eq 1 ]; then
+    REQUIRED_PKGS+=(qemu-user-arm glibc32 gcc-libs-dev-glibc32)
+fi
 MISSING_PKGS=()
 
 for pkg in "${REQUIRED_PKGS[@]}"; do
@@ -65,14 +84,25 @@ mkdir -p "$RUSTUP_WORK_DIR"
 cd "$RUSTUP_WORK_DIR"
 
 # 2. Download GNU Installer
-echo "Step 2: Downloading Rustup GNU installer..."
-curl -sSf https://static.rust-lang.org/rustup/dist/aarch64-unknown-linux-gnu/rustup-init -o rustup-init-gnu
+echo "Step 2: Downloading Rustup GNU installer ($TARGET_TRIPLE)..."
+curl -sSf "https://static.rust-lang.org/rustup/dist/$TARGET_TRIPLE/rustup-init" -o rustup-init-gnu
 chmod +x rustup-init-gnu
 
-# 3. Run the installer via grun
-echo "Step 3: Installing Rustup via grun..."
-# Run under grun to use glibc
-grun ./rustup-init-gnu -y --default-host aarch64-unknown-linux-gnu
+# 3. Patch rustup-init-gnu interpreter and run via runner (grun or qemu-arm)
+echo "Step 3: Installing Rustup via $RUNNER..."
+if [ "$IS_ARM32" -eq 1 ]; then
+    GLIBC32_PATH="$GLIBC_PREFIX/lib32"
+    [ -d "$GLIBC32_PATH" ] || GLIBC32_PATH="$GLIBC_PREFIX"
+    INTERP="$GLIBC32_PATH/ld-linux-armhf.so.3"
+    if [ -f "$INTERP" ]; then
+        patchelf --set-interpreter "$INTERP" --set-rpath "$GLIBC32_PATH" ./rustup-init-gnu 2>/dev/null || true
+    fi
+    # Run under qemu-arm for 32-bit ARM
+    qemu-arm -L "$GLIBC32_PATH" ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE"
+else
+    # Run under grun to use glibc on aarch64
+    grun ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE"
+fi
 
 # 4. Resolve /proc/self/exe copy bug
 echo "Step 4: Resolving the ld.so self-copy bug..."
@@ -122,12 +152,6 @@ echo "Step 7: Configuring cargo environment..."
 CARGO_ENV="$CARGO_BIN/env"
 touch "$CARGO_ENV"
 
-# Update ~/.cargo/env if not already present
-# NOTE: We intentionally do NOT add $GLIBC_PREFIX/bin to PATH.
-# The glibc coreutils (mv, wc, tail, find, etc.) in that directory shadow
-# native Termux tools. Since libc.so there is a GNU linker script (not an ELF),
-# those glibc-linked binaries crash at startup with "invalid ELF header".
-# The wrappers (rustup, maturin) set GLIBC_PREFIX internally when needed.
 if ! grep -q "Termux Glibc userland integration" "$CARGO_ENV" 2>/dev/null; then
     cat << 'EOF' >> "$CARGO_ENV"
 
@@ -146,10 +170,10 @@ if [ ! -f "$CARGO_CONFIG" ]; then
     echo "Creating global cargo configuration at $CARGO_CONFIG..."
     cat << EOF > "$CARGO_CONFIG"
 [build]
-target = "aarch64-linux-android"
+target = "$ANDROID_TARGET"
 incremental = false
 
-[target.aarch64-linux-android]
+[target.$ANDROID_TARGET]
 linker = "$PREFIX/bin/clang"
 rustflags = ["-C", "link-arg=-Wl,-rpath,$PREFIX/lib", "-C", "link-arg=-Wl,--enable-new-dtags"]
 EOF

@@ -101,7 +101,8 @@ You'll get this question a lot. Here's the direct answer:
 
 ## Limitations
 
-- Supports **aarch64 Termux only** (64-bit ARM Android).
+- Native support for **aarch64 Termux** (64-bit ARM Android).
+- Experimental support for **32-bit ARM** via `qemu-arm` (`RUSTERMUX_ARCH=arm32 ./install.sh`). See [docs/arm32-experimental.md](docs/arm32-experimental.md).
 - Requires Termux's `glibc` packages (`glibc`, `glibc-repo`).
 - Patches upstream Rust binaries at the ELF level and is therefore **unofficial** — not supported by the Rust Project or Termux maintainers.
 - Does **not** provide a native Android host toolchain for `rustup`.
@@ -123,6 +124,7 @@ rustermux/
 │   └── auto-patcher.sh    # Startup helper to repair sitecustomize & self-updates
 ├── docs/
 │   ├── architecture.md    # Why we use the GNU target and how it works
+│   ├── arm32-experimental.md # Experimental 32-bit ARM setup guide
 │   ├── troubleshooting.md # Guide to fixing common errors
 │   └── usage.md           # Instructions on building and usage
 └── tests/
@@ -133,7 +135,7 @@ rustermux/
 
 ## How It Works
 
-Rustermux uses `patchelf` to rewrite the ELF interpreter (`PT_INTERP`) of each Rust toolchain binary from the standard glibc path (`/lib/ld-linux-aarch64.so.1`) to the Termux glibc path provided by `glibc-runner`. A post-execution hook wrapper intercepts every `rustup` invocation so that any newly downloaded binaries are automatically patched without user intervention.
+Rustermux uses `patchelf` to rewrite the ELF interpreter (`PT_INTERP`) of each Rust toolchain binary from the standard glibc path (`/lib/ld-linux-aarch64.so.1` or `ld-linux-armhf.so.3`) to the Termux glibc path provided by `glibc-runner`. A post-execution hook wrapper intercepts every `rustup` invocation so that any newly downloaded binaries are automatically patched without user intervention.
 
 For details, see [docs/architecture.md](docs/architecture.md).
 
@@ -161,9 +163,7 @@ For details, see [docs/architecture.md](docs/architecture.md).
 | `cargo install` | ✅ Supported |
 | `cargo build` | ✅ Supported |
 | Maturin | ✅ Supported |
-
-> [!NOTE]
-> Only `aarch64` (64-bit ARM) Termux is supported. `x86_64` Android (emulators) and 32-bit ARM are not supported.
+| 32-bit ARM | 🧪 Experimental (`qemu-arm`) |
 
 ---
 
@@ -172,6 +172,7 @@ For details, see [docs/architecture.md](docs/architecture.md).
 | Document | Description |
 |----------|-------------|
 | [architecture.md](docs/architecture.md) | Why we use the GNU target, how the ELF patcher works, and the wrapper hook design |
+| [arm32-experimental.md](docs/arm32-experimental.md) | Experimental 32-bit ARM support using `qemu-arm` |
 | [usage.md](docs/usage.md) | Building projects, running binaries, and Maturin integration |
 | [troubleshooting.md](docs/troubleshooting.md) | Fixing common errors: missing tools, patchelf failures, RUNPATH issues |
 

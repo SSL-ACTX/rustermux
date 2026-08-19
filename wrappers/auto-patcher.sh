@@ -11,11 +11,14 @@ GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
 CARGO_BIN_DIR="$HOME_DIR/.cargo/bin"
 
-# 1. Manage sitecustomize.py for platform spoofing
-find "$PREFIX/lib" -maxdepth 3 -type d -path "*/python*/site-packages" 2>/dev/null | while read -r site_pkg_dir; do
-    site_cust="$site_pkg_dir/sitecustomize.py"
-    if [ ! -f "$site_cust" ] || ! grep -q "sys.platform = 'linux'" "$site_cust"; then
-        cat << 'EOF' > "$site_cust"
+# 1. Manage sitecustomize.py and _sysconfigdata symlinks for platform spoofing
+find "$PREFIX/lib" -maxdepth 2 -type d -name "python3.*" 2>/dev/null | while read -r py_dir; do
+    # Deploy sitecustomize.py to both standard library root and site-packages
+    for target_dir in "$py_dir" "$py_dir/site-packages"; do
+        if [ -d "$target_dir" ]; then
+            site_cust="$target_dir/sitecustomize.py"
+            if [ ! -f "$site_cust" ] || ! grep -q "sys.platform = 'linux'" "$site_cust"; then
+                cat << 'EOF' > "$site_cust"
 import sys
 sys.platform = 'linux'
 import platform
@@ -23,11 +26,39 @@ platform.system = lambda: 'Linux'
 try:
     m = __import__('_sysconfigdata__android_aarch64-linux-android')
     sys.modules['_sysconfigdata__linux_aarch64-linux-android'] = m
+    sys.modules['_sysconfigdata__linux_aarch64-linux-gnu'] = m
+    sys.modules['_sysconfigdata__aarch64-linux-android'] = m
 except ImportError:
     pass
 EOF
+            fi
+        fi
+    done
+
+    # Ensure compatibility symlinks for _sysconfigdata
+    if [ -f "$py_dir/_sysconfigdata__android_aarch64-linux-android.py" ]; then
+        for alias in "_sysconfigdata__linux_aarch64-linux-android.py" "_sysconfigdata__linux_aarch64-linux-gnu.py" "_sysconfigdata__aarch64-linux-android.py"; do
+            [ -e "$py_dir/$alias" ] || ln -sf "_sysconfigdata__android_aarch64-linux-android.py" "$py_dir/$alias" 2>/dev/null || true
+        done
     fi
 done
+
+# Manage PyO3 configuration for CPython builds
+PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+if [ -n "$PY_VER" ]; then
+    PYO3_CFG="$HOME_DIR/.cargo/pyo3.config"
+    cat << EOF > "$PYO3_CFG"
+implementation=CPython
+version=$PY_VER
+shared=true
+abi3=false
+lib_name=python$PY_VER
+lib_dir=$PREFIX/lib
+pointer_width=64
+build_flags=
+suppress_build_script_link_lines=false
+EOF
+fi
 
 # Find and patch site-packages in any active or local virtualenvs dynamically
 VENV_BASES=("$PWD/.venv" "$PWD/venv" "$PWD/env")
@@ -113,8 +144,9 @@ if [ -f "$RUSTUP_BIN" ] && [ -x "$RUSTUP_BIN" ]; then
         if [ -f "$CARGO_BIN_DIR/patch.sh" ]; then
             "$CARGO_BIN_DIR/patch.sh" "$RUSTUP_REAL"
         else
-            LOCAL_INTERPRETER=$(find "$GLIBC_PREFIX/lib" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
-            LOCAL_INTERPRETER="${LOCAL_INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
+            ARCH="$(uname -m)"
+            [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ] && DEFAULT_LOADER="ld-linux-armhf.so.3" || DEFAULT_LOADER="ld-linux-aarch64.so.1"
+            LOCAL_INTERPRETER="$GLIBC_PREFIX/lib/$DEFAULT_LOADER"
             patchelf --set-interpreter "$LOCAL_INTERPRETER" \
                      --set-rpath "$GLIBC_PREFIX/lib" \
                      "$RUSTUP_REAL" 2>/dev/null || true
@@ -197,9 +229,9 @@ case "$*" in
             # Fallback inline patching logic if patch.sh is not found
             PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
             GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
-            RPATH="$GLIBC_PREFIX/lib"
-            INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
-            INTERPRETER="${INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
+            ARCH="$(uname -m)"
+            [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ] && DEFAULT_LOADER="ld-linux-armhf.so.3" || DEFAULT_LOADER="ld-linux-aarch64.so.1"
+            INTERPRETER="$GLIBC_PREFIX/lib/$DEFAULT_LOADER"
             
             while read -r toolchain_dir; do
                 for f in "$toolchain_dir"/*; do

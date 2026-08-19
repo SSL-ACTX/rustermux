@@ -15,12 +15,25 @@ export PATH="$GLIBC_PREFIX/bin:$PATH"
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
-    # Automatically patch RPATH/RUNPATH of compiled Python extensions
-    find python -name "*.so" 2>/dev/null | while read -r f; do
+    # Automatically patch RPATH/RUNPATH and extension naming of compiled Python extensions
+    find . -maxdepth 5 -name "*.so" 2>/dev/null | while read -r f; do
         if [ -f "$f" ] && [ -x "$f" ]; then
-            if file "$f" 2>/dev/null | grep -q "ELF"; then
+            if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ]; then
                 patchelf --set-rpath "$PREFIX/lib" "$f" 2>/dev/null && \
                 echo "[Maturin Wrapper] Automatically patched RUNPATH of: $(basename "$f")" || true
+
+                # Fix libc++.so linkage if required
+                if patchelf --print-needed "$f" 2>/dev/null | grep -q "^libc++\.so$"; then
+                    patchelf --replace-needed libc++.so libc++_shared.so "$f" 2>/dev/null || true
+                fi
+
+                # Auto-create linux_aarch64 and generic .so symlinks if android-android naming was generated
+                dir_path=$(dirname "$f")
+                base_name=$(basename "$f")
+                if echo "$base_name" | grep -q "aarch64-android-android\.so"; then
+                    linux_name=$(echo "$base_name" | sed 's/aarch64-android-android/aarch64-linux-android/g')
+                    [ -e "$dir_path/$linux_name" ] || ln -sf "$base_name" "$dir_path/$linux_name" 2>/dev/null || true
+                fi
             fi
         fi
     done

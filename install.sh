@@ -158,6 +158,8 @@ if ! grep -q "Termux Glibc userland integration" "$CARGO_ENV" 2>/dev/null; then
 # Termux Glibc userland integration
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+export CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET:-aarch64-linux-android}"
+export PYO3_CONFIG_FILE="${PYO3_CONFIG_FILE:-$HOME/.cargo/pyo3.config}"
 # GLIBC_PREFIX/bin is intentionally NOT added to PATH to avoid glibc coreutils
 # shadowing native Termux tools (libc.so there is a linker script, not an ELF).
 EOF

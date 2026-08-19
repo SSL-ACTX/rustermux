@@ -25,8 +25,18 @@ if ! command -v grun >/dev/null 2>&1 && ! command -v qemu-arm >/dev/null 2>&1; t
     MISSING_DEPS+=("glibc-runner or qemu-user-arm")
 fi
 RPATH="$GLIBC_PREFIX/lib"
-INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
-if [ -z "$INTERPRETER" ]; then
+ARCH="$(uname -m)"
+if [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ]; then
+    DEFAULT_LOADER="ld-linux-armhf.so.3"
+else
+    DEFAULT_LOADER="ld-linux-aarch64.so.1"
+fi
+if [ -f "$RPATH/$DEFAULT_LOADER" ]; then
+    INTERPRETER="$RPATH/$DEFAULT_LOADER"
+else
+    INTERPRETER="${GLIBC_PREFIX}/lib/${DEFAULT_LOADER}"
+fi
+if [ ! -f "$INTERPRETER" ]; then
     MISSING_DEPS+=("glibc")
 fi
 

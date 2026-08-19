@@ -14,11 +14,19 @@ CACHE_FILE="$CARGO_HOME/.patch_cache"
 NPROC=$(nproc 2>/dev/null || echo 4)
 
 # Discover the dynamic loader interpreter dynamically if not provided
+ARCH="$(uname -m)"
+if [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ]; then
+    DEFAULT_LOADER="ld-linux-armhf.so.3"
+else
+    DEFAULT_LOADER="ld-linux-aarch64.so.1"
+fi
+
 if [ -z "$INTERPRETER" ]; then
-    # Look for ld-linux loader inside the glibc library dir (handles multiple architectures dynamically)
-    INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
-    # Fallback to standard path if discovery fails
-    INTERPRETER="${INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
+    if [ -f "$RPATH/$DEFAULT_LOADER" ]; then
+        INTERPRETER="$RPATH/$DEFAULT_LOADER"
+    else
+        INTERPRETER="${GLIBC_PREFIX}/lib/${DEFAULT_LOADER}"
+    fi
 fi
 
 # Ensure patchelf is installed
@@ -42,7 +50,7 @@ CACHE_MODIFIED=0
 # Helper exported worker function for single-file processing
 patch_single_file_worker() {
     local file="$1"
-    local interp="$2"
+    local default_interp="$2"
     local rpath="$3"
     
     file=$(readlink -f "$file" 2>/dev/null || echo "$file")
@@ -50,6 +58,21 @@ patch_single_file_worker() {
     if [ -f "$file" ] && [ -x "$file" ]; then
         # Fast magic-bytes check for ELF header (\x7fELF)
         if [ "$(head -c 4 "$file" 2>/dev/null)" = $'\x7fELF' ]; then
+            local interp="$default_interp"
+            local elf_class
+            elf_class=$(file -b "$file" 2>/dev/null || true)
+            if echo "$elf_class" | grep -q "32-bit"; then
+                if [ -f "$GLIBC_PREFIX/lib/ld-linux-armhf.so.3" ]; then
+                    interp="$GLIBC_PREFIX/lib/ld-linux-armhf.so.3"
+                elif [ -f "$GLIBC_PREFIX/lib32/ld-linux-armhf.so.3" ]; then
+                    interp="$GLIBC_PREFIX/lib32/ld-linux-armhf.so.3"
+                fi
+            elif echo "$elf_class" | grep -q "64-bit"; then
+                if [ -f "$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1" ]; then
+                    interp="$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1"
+                fi
+            fi
+
             local current_interpreter
             current_interpreter=$(patchelf --print-interpreter "$file" 2>/dev/null || true)
             

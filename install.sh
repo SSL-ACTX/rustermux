@@ -135,6 +135,7 @@ install_file() {
 install_file "patch.sh" "$CARGO_BIN_DIR/patch.sh"
 install_file "wrappers/rustup" "$CARGO_BIN_DIR/rustup"
 install_file "wrappers/auto-patcher.sh" "$CARGO_BIN_DIR/auto-patcher.sh"
+install_file "wrappers/cargo-audit" "$CARGO_BIN_DIR/cargo-audit-wrapper"
 
 # 6. Patch the initial suite
 echo "Step 6: Patching initial binaries..."
@@ -146,6 +147,16 @@ for toolchain_dir in "$HOME_DIR"/.rustup/toolchains/*/bin; do
         "$CARGO_BIN_DIR/patch.sh" "$toolchain_dir"
     fi
 done
+
+# Wrap cargo-audit if already installed (cargo-audit uses reqwest+rustls-platform-verifier
+# which panics on Android; our wrapper uses git to fetch the advisory DB instead)
+CARGO_AUDIT_BIN="$CARGO_BIN_DIR/cargo-audit"
+if [ -f "$CARGO_AUDIT_BIN" ] && [ "$(head -c 4 "$CARGO_AUDIT_BIN" 2>/dev/null)" = $'\x7fELF' ]; then
+    echo "Wrapping existing cargo-audit installation..."
+    mv "$CARGO_AUDIT_BIN" "$CARGO_BIN_DIR/cargo-audit-real"
+    cp "$CARGO_BIN_DIR/cargo-audit-wrapper" "$CARGO_AUDIT_BIN"
+    chmod +x "$CARGO_AUDIT_BIN"
+fi
 
 # 7. Configure Environment
 echo "Step 7: Configuring cargo environment..."

@@ -1,0 +1,39 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# cargo-audit wrapper for Termux: uses git to fetch the advisory DB since
+# rustls-platform-verifier requires Android JVM init (unavailable in Termux).
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ADVISORY_DB_DIR="${CARGO_AUDIT_DB:-${HOME}/.cargo/advisory-db}"
+ADVISORY_DB_REPO="https://github.com/RustSec/advisory-db.git"
+
+# Prefer cargo-install'd real binary, fall back to pkg-installed system binary.
+if [ -f "$SCRIPT_DIR/cargo-audit-real" ] && [ -x "$SCRIPT_DIR/cargo-audit-real" ]; then
+    REAL_BIN="$SCRIPT_DIR/cargo-audit-real"
+elif [ -f "$PREFIX/bin/cargo-audit" ] && [ -x "$PREFIX/bin/cargo-audit" ]; then
+    REAL_BIN="$PREFIX/bin/cargo-audit"
+else
+    echo "[cargo-audit wrapper] Error: cargo-audit binary not found." >&2
+    exit 1
+fi
+
+# Pass through if not the audit subcommand, or if user already controls fetch behavior.
+[ "${1:-}" != "audit" ] && exec "$REAL_BIN" "$@"
+for arg in "$@"; do
+    case "$arg" in --no-fetch|--db|-n) exec "$REAL_BIN" "$@" ;; esac
+done
+
+# Sync advisory DB via git.
+if [ -d "$ADVISORY_DB_DIR/.git" ]; then
+    git -C "$ADVISORY_DB_DIR" pull --ff-only -q 2>&1 || \
+        echo "[cargo-audit wrapper] Warning: git pull failed, using cached DB." >&2
+else
+    echo "[cargo-audit wrapper] Cloning advisory DB (first run)..."
+    git clone --depth=1 -q "$ADVISORY_DB_REPO" "$ADVISORY_DB_DIR" || {
+        echo "[cargo-audit wrapper] Error: Failed to clone advisory DB." >&2
+        exit 1
+    }
+fi
+
+shift  # drop 'audit'
+exec "$REAL_BIN" audit --no-fetch --db "$ADVISORY_DB_DIR" "$@"

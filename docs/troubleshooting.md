@@ -95,3 +95,37 @@ patchelf --set-rpath /data/data/com.termux/files/usr/lib python/your_extension.s
 ```
 
 Our `wrappers/maturin` script handles this auto-patching step automatically post-build.
+
+---
+
+## 5. `cargo audit` Panics: `Expect rustls-platform-verifier to be initialized`
+
+### Symptoms
+
+Running `cargo audit` crashes immediately with:
+
+```text
+The application panicked (crashed).
+Message:  Expect rustls-platform-verifier to be initialized
+Location: .../rustls-platform-verifier-.../src/android.rs:90
+...
+error: couldn't fetch advisory database: git operation failed
+```
+
+### Cause
+
+`cargo-audit` bundles `reqwest` as its HTTP client, which uses `rustls-platform-verifier` for TLS certificate verification on Android. That library requires the Android JVM to be initialized — something that never happens inside a Termux shell session — so it panics when `cargo audit` tries to fetch the RustSec advisory database over HTTPS.
+
+### Solution
+
+Rustermux automatically installs a `cargo-audit` wrapper that uses `git` (which has its own working TLS stack in Termux) to maintain a local clone of the advisory database, then runs `cargo audit --no-fetch --db ~/.cargo/advisory-db`. No user action is needed — just run `cargo audit` normally.
+
+If you installed `cargo-audit` **before** running the Rustermux installer, re-run the installer to pick it up, or wrap it manually:
+
+```bash
+# One-time fix (if you already have cargo-audit installed)
+mv ~/.cargo/bin/cargo-audit ~/.cargo/bin/cargo-audit-real
+cp ~/.cargo/bin/cargo-audit-wrapper ~/.cargo/bin/cargo-audit
+```
+
+For future `cargo install cargo-audit` runs, the `auto-patcher.sh` startup hook will automatically detect and re-wrap the new binary.

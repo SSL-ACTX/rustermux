@@ -121,6 +121,7 @@ rustermux/
 ├── wrappers/
 │   ├── rustup             # Rustup entry point wrapper with post-exec hooks
 │   ├── maturin            # Maturin wrapper for Python native extensions
+│   ├── cargo-audit        # cargo-audit wrapper (bypasses Android JVM panic via git)
 │   └── auto-patcher.sh    # Startup helper to repair sitecustomize & self-updates
 ├── docs/
 │   ├── architecture.md    # Why we use the GNU target and how it works
@@ -162,6 +163,7 @@ For details, see [docs/architecture.md](docs/architecture.md).
 | `rustup self update` | ✅ Auto-patched |
 | `cargo install` | ✅ Supported |
 | `cargo build` | ✅ Supported |
+| `cargo audit` | ✅ Supported (via wrapper) |
 | Maturin | ✅ Supported |
 | 32-bit ARM | 🧪 Experimental (`qemu-arm`) |
 

@@ -89,9 +89,14 @@ EOF
     fi
 done
 
-# 2. Manage glibc binaries wrapping (e.g. maturin)
+# 2. Manage glibc binaries wrapping (e.g. maturin, cargo-audit)
 BINARIES=(
     "$PREFIX/bin/maturin|maturin-real"
+)
+
+# Also wrap cargo-installed glibc binaries in ~/.cargo/bin
+CARGO_BINARIES=(
+    "$HOME_DIR/.cargo/bin/cargo-audit|cargo-audit-real"
 )
 
 for entry in "${BINARIES[@]}"; do
@@ -126,6 +131,26 @@ fi
 exit \$EXIT_CODE
 EOF
                 chmod +x "$bin_path"
+            fi
+        fi
+    fi
+done
+
+# Process cargo-installed binaries that need wrapping (e.g. cargo-audit)
+for entry in "${CARGO_BINARIES[@]}"; do
+    IFS="|" read -r bin_path real_name <<< "$entry"
+    if [ -f "$bin_path" ] && [ -x "$bin_path" ]; then
+        # Only act if it's an ELF (not already a shell wrapper)
+        if [ "$(head -c 4 "$bin_path" 2>/dev/null)" = $'\x7fELF' ]; then
+            dir_path=$(dirname "$bin_path")
+            real_path="$dir_path/$real_name"
+            wrapper_src="$CARGO_BIN_DIR/$(basename "$bin_path")-wrapper"
+            # Check if wrapper script is available in cargo bin dir
+            if [ -f "$wrapper_src" ]; then
+                mv "$bin_path" "$real_path"
+                cp "$wrapper_src" "$bin_path"
+                chmod +x "$bin_path"
+                echo "[auto-patcher] Wrapped $(basename "$bin_path") -> $real_name using $wrapper_src"
             fi
         fi
     fi

@@ -6,6 +6,14 @@ if [ -z "$TERMUX_VERSION" ] && [ ! -d /data/data/com.termux ]; then
     exit 0
 fi
 
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    _B='\033[1m' _G='\033[92m' _Y='\033[33m' _R='\033[31m' _0='\033[0m'
+else
+    _B='' _G='' _Y='' _R='' _0=''
+fi
+status() { printf "${_B}${_G}%12s${_0} %s\n" "$1" "$2"; }
+warn()   { printf "${_B}${_Y}warning${_0}: %s\n" "$1" >&2; }
+
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
@@ -157,7 +165,7 @@ for entry in "${CARGO_BINARIES[@]}"; do
                 mv "$bin_path" "$real_path"
                 cp "$wrapper_src" "$bin_path"
                 chmod +x "$bin_path"
-                echo "[auto-patcher] Wrapped $(basename "$bin_path") -> $real_name using $wrapper_src"
+                status "Wrapped" "$(basename "$bin_path")"
             fi
         fi
     fi
@@ -192,6 +200,15 @@ if [ -f "$RUSTUP_BIN" ] && [ -x "$RUSTUP_BIN" ]; then
 # Prevent LD_PRELOAD conflicts (e.g. libtermux-exec.so)
 unset LD_PRELOAD
 
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    _B='\033[1m' _G='\033[92m' _Y='\033[33m' _R='\033[31m' _0='\033[0m'
+else
+    _B='' _G='' _Y='' _R='' _0=''
+fi
+status() { printf "${_B}${_G}%12s${_0} %s\n" "$1" "$2"; }
+warn()   { printf "${_B}${_Y}warning${_0}: %s\n" "$1" >&2; }
+err()    { printf "${_B}${_R}error${_0}: %s\n" "$1" >&2; }
+
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
@@ -206,22 +223,28 @@ RUSTUP_REAL="$CARGO_BIN/rustup-real"
 
 # Verify prerequisites are available at runtime
 MISSING_DEPS=()
-if ! command -v patchelf >/dev/null 2>&1; then
-    MISSING_DEPS+=("patchelf-glibc")
-fi
 if ! command -v grun >/dev/null 2>&1 && ! command -v qemu-arm >/dev/null 2>&1; then
     MISSING_DEPS+=("glibc-runner or qemu-user-arm")
 fi
 RPATH="$GLIBC_PREFIX/lib"
-INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
-if [ -z "$INTERPRETER" ]; then
+ARCH="$(uname -m)"
+if [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ]; then
+    DEFAULT_LOADER="ld-linux-armhf.so.3"
+else
+    DEFAULT_LOADER="ld-linux-aarch64.so.1"
+fi
+if [ -f "$RPATH/$DEFAULT_LOADER" ]; then
+    INTERPRETER="$RPATH/$DEFAULT_LOADER"
+else
+    INTERPRETER="${GLIBC_PREFIX}/lib/${DEFAULT_LOADER}"
+fi
+if [ ! -f "$INTERPRETER" ]; then
     MISSING_DEPS+=("glibc")
 fi
 
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-    echo "ERROR: Termux Rustup Glibc wrapper is missing required dependencies: ${MISSING_DEPS[*]}" >&2
-    echo "Please run the installer again or install them manually:" >&2
-    echo "  pkg install -y glibc glibc-runner patchelf-glibc" >&2
+    err "missing dependencies: ${MISSING_DEPS[*]}"
+    printf "  run: pkg install -y glibc glibc-runner patchelf-glibc\n" >&2
     echo ""
     exit 1
 fi
@@ -236,7 +259,7 @@ if echo "$ELF_CLASS" | grep -q "32-bit"; then
         qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
         EXIT_CODE=$?
     else
-        echo "ERROR: 32-bit ARM rustup-real requires qemu-arm (qemu-user-arm package)." >&2
+        err "32-bit ARM requires qemu-arm — pkg install qemu-user-arm"
         exit 1
     fi
 else
@@ -245,44 +268,47 @@ else
     EXIT_CODE=$?
 fi
 
-# Post-execution hook: Auto-patch toolchain binaries if any update/install command was run
-case "$*" in
-    *update*|*install*|*add*|*default*|*toolchain*)
-        echo "Post-execution hook: Auto-patching toolchain binaries..."
-        
-        # If the binary patcher script is available in the cargo bin, use it
-        if [ -f "$CARGO_BIN/patch.sh" ]; then
-            while read -r toolchain_dir; do
-                if [ -d "$toolchain_dir" ]; then
-                    "$CARGO_BIN/patch.sh" "$toolchain_dir"
-                fi
-            done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
-        else
-            # Fallback inline patching logic if patch.sh is not found
-            PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-            GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
-            ARCH="$(uname -m)"
-            [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ] && DEFAULT_LOADER="ld-linux-armhf.so.3" || DEFAULT_LOADER="ld-linux-aarch64.so.1"
-            INTERPRETER="$GLIBC_PREFIX/lib/$DEFAULT_LOADER"
-            
-            while read -r toolchain_dir; do
-                for f in "$toolchain_dir"/*; do
-                    if [ -f "$f" ] && [ -x "$f" ]; then
-                        if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
-                            patchelf --set-interpreter "$INTERPRETER" \
-                                     --set-rpath "$RPATH" \
-                                     "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true
-                        fi
+# Post-execution hook: only meaningful when invoked as rustup, not as cargo/rustfmt/etc.
+if [ "$(basename "$0")" = "rustup" ]; then
+    case "$*" in
+        *update*|*install*|*add*|*default*|*toolchain*)
+            status "Patching" "toolchain binaries"
+
+            if ! command -v patchelf >/dev/null 2>&1; then
+                warn "patchelf not found, skipping patch — pkg install patchelf-glibc"
+            elif [ -f "$CARGO_BIN/patch.sh" ]; then
+                while read -r toolchain_dir; do
+                    if [ -d "$toolchain_dir" ]; then
+                        "$CARGO_BIN/patch.sh" "$toolchain_dir"
                     fi
-                done
-            done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
-        fi
-        ;;
-esac
+                done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
+            else
+                # Fallback inline patching logic if patch.sh is not found
+                PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+                GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+                RPATH="$GLIBC_PREFIX/lib"
+                INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
+                INTERPRETER="${INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
+
+                while read -r toolchain_dir; do
+                    for f in "$toolchain_dir"/*; do
+                        if [ -f "$f" ] && [ -x "$f" ]; then
+                            if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
+                                patchelf --set-interpreter "$INTERPRETER" \
+                                         --set-rpath "$RPATH" \
+                                         "$f" 2>/dev/null && status "Patched" "$(basename "$f")" || true
+                            fi
+                        fi
+                    done
+                done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
+            fi
+            ;;
+    esac
+fi
 
 exit $EXIT_CODE
 EOF_RUSTUP
         chmod +x "$RUSTUP_BIN"
-        echo "[auto-patcher] Recovered rustup wrapper after self-update."
+        status "Recovered" "rustup wrapper after self-update"
     fi
 fi

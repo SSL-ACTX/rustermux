@@ -2,6 +2,15 @@
 # patch.sh - Termux Glibc Binary Patcher with Parallel Execution and Performance Caching
 # Patches ELF binaries to use Termux's glibc dynamic loader and library path.
 
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    _B='\033[1m' _G='\033[92m' _Y='\033[33m' _R='\033[31m' _0='\033[0m'
+else
+    _B='' _G='' _Y='' _R='' _0=''
+fi
+status() { printf "${_B}${_G}%12s${_0} %s\n" "$1" "$2"; }
+warn()   { printf "${_B}${_Y}warning${_0}: %s\n" "$1" >&2; }
+err()    { printf "${_B}${_R}error${_0}: %s\n" "$1" >&2; }
+
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export GLIBC_PREFIX  # needed by patch_single_file_worker in xargs subshells
@@ -28,7 +37,7 @@ fi
 export INTERPRETER  # needed by patch_single_file_worker in xargs subshells
 
 if ! command -v patchelf >/dev/null 2>&1; then
-    echo "Error: patchelf is not installed. Please run: pkg install patchelf-glibc" >&2
+    err "patchelf not installed — run: pkg install patchelf-glibc"
     exit 1
 fi
 
@@ -74,10 +83,10 @@ patch_single_file_worker() {
             current_interpreter=$(patchelf --print-interpreter "$file" 2>/dev/null || true)
             
             if [ "$current_interpreter" != "$interp" ]; then
-                echo "  [Parallel] Patching: $(basename "$file")"
+                status "Patching" "$(basename "$file")"
                 patchelf --set-interpreter "$interp" \
                          --set-rpath "$rpath" \
-                         "$file" 2>/dev/null || echo "Warning: Failed to patch $file" >&2
+                         "$file" 2>/dev/null || warn "failed to patch $(basename "$file")"
             fi
         fi
         
@@ -115,7 +124,7 @@ patch_file() {
 patch_dir() {
     local dir="$1"
     if [ -d "$dir" ]; then
-        echo "Scanning directory (parallel pool: ${NPROC} workers): $dir"
+        status "Scanning" "$(basename "$dir") (${NPROC} workers)"
         
         local needs_patching=()
         while read -r f; do
@@ -148,7 +157,7 @@ patch_dir() {
 }
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 <file_or_directory_to_patch>"
+    printf "usage: %s <file|directory>\n" "$0"
     exit 1
 fi
 
@@ -159,7 +168,7 @@ if [ -d "$TARGET" ]; then
 elif [ -f "$TARGET" ]; then
     patch_file "$TARGET"
 else
-    echo "Error: Target '$TARGET' does not exist." >&2
+    err "target '$TARGET' does not exist"
     exit 1
 fi
 

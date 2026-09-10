@@ -4,6 +4,15 @@
 # Prevent LD_PRELOAD conflicts (e.g. libtermux-exec.so)
 unset LD_PRELOAD
 
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    _B='\033[1m' _G='\033[92m' _Y='\033[33m' _R='\033[31m' _0='\033[0m'
+else
+    _B='' _G='' _Y='' _R='' _0=''
+fi
+status() { printf "${_B}${_G}%12s${_0} %s\n" "$1" "$2"; }
+warn()   { printf "${_B}${_Y}warning${_0}: %s\n" "$1" >&2; }
+err()    { printf "${_B}${_R}error${_0}: %s\n" "$1" >&2; }
+
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
@@ -38,9 +47,8 @@ if [ ! -f "$INTERPRETER" ]; then
 fi
 
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-    echo "ERROR: Termux Rustup Glibc wrapper is missing required dependencies: ${MISSING_DEPS[*]}" >&2
-    echo "Please run the installer again or install them manually:" >&2
-    echo "  pkg install -y glibc glibc-runner patchelf-glibc" >&2
+    err "missing dependencies: ${MISSING_DEPS[*]}"
+    printf "  run: pkg install -y glibc glibc-runner patchelf-glibc\n" >&2
     echo ""
     exit 1
 fi
@@ -55,7 +63,7 @@ if echo "$ELF_CLASS" | grep -q "32-bit"; then
         qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
         EXIT_CODE=$?
     else
-        echo "ERROR: 32-bit ARM rustup-real requires qemu-arm (qemu-user-arm package)." >&2
+        err "32-bit ARM requires qemu-arm — pkg install qemu-user-arm"
         exit 1
     fi
 else
@@ -68,10 +76,10 @@ fi
 if [ "$(basename "$0")" = "rustup" ]; then
     case "$*" in
         *update*|*install*|*add*|*default*|*toolchain*)
-            echo "Post-execution hook: Auto-patching toolchain binaries..."
+            status "Patching" "toolchain binaries"
 
             if ! command -v patchelf >/dev/null 2>&1; then
-                echo "Warning: patchelf not found, skipping auto-patch (pkg install patchelf-glibc)" >&2
+                warn "patchelf not found, skipping patch — pkg install patchelf-glibc"
             elif [ -f "$CARGO_BIN/patch.sh" ]; then
                 while read -r toolchain_dir; do
                     if [ -d "$toolchain_dir" ]; then
@@ -92,7 +100,7 @@ if [ "$(basename "$0")" = "rustup" ]; then
                             if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
                                 patchelf --set-interpreter "$INTERPRETER" \
                                          --set-rpath "$RPATH" \
-                                         "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true
+                                         "$f" 2>/dev/null && status "Patched" "$(basename "$f")" || true
                             fi
                         fi
                     done

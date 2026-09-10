@@ -23,17 +23,25 @@ for arg in "$@"; do
     case "$arg" in --no-fetch|--db|-n) exec "$REAL_BIN" "$@" ;; esac
 done
 
-# Sync advisory DB via git.
+# Sync advisory DB via git, at most once per 24 hours.
+PULL_STAMP="${ADVISORY_DB_DIR}/.last_pull"
+NOW=$(date +%s)
+LAST_PULL=0
+[ -f "$PULL_STAMP" ] && LAST_PULL=$(cat "$PULL_STAMP" 2>/dev/null || echo 0)
+
 if [ -d "$ADVISORY_DB_DIR/.git" ]; then
-    git -C "$ADVISORY_DB_DIR" pull --ff-only -q 2>&1 || \
-        echo "[cargo-audit wrapper] Warning: git pull failed, using cached DB." >&2
+    if [ $(( NOW - LAST_PULL )) -ge 86400 ]; then
+        git -C "$ADVISORY_DB_DIR" pull --ff-only -q 2>&1 && echo "$NOW" > "$PULL_STAMP" || \
+            echo "[cargo-audit wrapper] Warning: git pull failed, using cached DB." >&2
+    fi
 else
     echo "[cargo-audit wrapper] Cloning advisory DB (first run)..."
     git clone --depth=1 -q "$ADVISORY_DB_REPO" "$ADVISORY_DB_DIR" || {
         echo "[cargo-audit wrapper] Error: Failed to clone advisory DB." >&2
         exit 1
     }
+    echo "$NOW" > "$PULL_STAMP"
 fi
 
 shift  # drop 'audit'
-exec "$REAL_BIN" audit --no-fetch --db "$ADVISORY_DB_DIR" "$@"
+exec "$REAL_BIN" audit --no-fetch --stale --db "$ADVISORY_DB_DIR" "$@"

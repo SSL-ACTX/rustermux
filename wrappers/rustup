@@ -18,9 +18,6 @@ RUSTUP_REAL="$CARGO_BIN/rustup-real"
 
 # Verify prerequisites are available at runtime
 MISSING_DEPS=()
-if ! command -v patchelf >/dev/null 2>&1; then
-    MISSING_DEPS+=("patchelf-glibc")
-fi
 if ! command -v grun >/dev/null 2>&1 && ! command -v qemu-arm >/dev/null 2>&1; then
     MISSING_DEPS+=("glibc-runner or qemu-user-arm")
 fi
@@ -73,7 +70,9 @@ if [ "$(basename "$0")" = "rustup" ]; then
         *update*|*install*|*add*|*default*|*toolchain*)
             echo "Post-execution hook: Auto-patching toolchain binaries..."
 
-            if [ -f "$CARGO_BIN/patch.sh" ]; then
+            if ! command -v patchelf >/dev/null 2>&1; then
+                echo "Warning: patchelf not found, skipping auto-patch (pkg install patchelf-glibc)" >&2
+            elif [ -f "$CARGO_BIN/patch.sh" ]; then
                 while read -r toolchain_dir; do
                     if [ -d "$toolchain_dir" ]; then
                         "$CARGO_BIN/patch.sh" "$toolchain_dir"

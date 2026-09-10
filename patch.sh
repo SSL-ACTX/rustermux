@@ -2,18 +2,15 @@
 # patch.sh - Termux Glibc Binary Patcher with Parallel Execution and Performance Caching
 # Patches ELF binaries to use Termux's glibc dynamic loader and library path.
 
-set -e
-
-# Default paths if not specified
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+export GLIBC_PREFIX  # needed by patch_single_file_worker in xargs subshells
 RPATH="${RPATH:-$GLIBC_PREFIX/lib}"
 HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
 CARGO_HOME="${CARGO_HOME:-$HOME_DIR/.cargo}"
 CACHE_FILE="$CARGO_HOME/.patch_cache"
 NPROC=$(nproc 2>/dev/null || echo 4)
 
-# Discover the dynamic loader interpreter dynamically if not provided
 ARCH="$(uname -m)"
 if [ "$RUSTERMUX_ARCH" = "arm32" ] || [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv8l" ] || [ "$ARCH" = "arm" ]; then
     DEFAULT_LOADER="ld-linux-armhf.so.3"
@@ -28,8 +25,8 @@ if [ -z "$INTERPRETER" ]; then
         INTERPRETER="${GLIBC_PREFIX}/lib/${DEFAULT_LOADER}"
     fi
 fi
+export INTERPRETER  # needed by patch_single_file_worker in xargs subshells
 
-# Ensure patchelf is installed
 if ! command -v patchelf >/dev/null 2>&1; then
     echo "Error: patchelf is not installed. Please run: pkg install patchelf-glibc" >&2
     exit 1

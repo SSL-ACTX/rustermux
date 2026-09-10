@@ -47,7 +47,9 @@ done
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
 if [ -n "$PY_VER" ]; then
     PYO3_CFG="$HOME_DIR/.cargo/pyo3.config"
-    cat << EOF > "$PYO3_CFG"
+    # Only rewrite if version changed or file is missing.
+    if ! grep -q "^version=$PY_VER$" "$PYO3_CFG" 2>/dev/null; then
+        cat << EOF > "$PYO3_CFG"
 implementation=CPython
 version=$PY_VER
 shared=true
@@ -58,10 +60,15 @@ pointer_width=64
 build_flags=
 suppress_build_script_link_lines=false
 EOF
+    fi
 fi
 
 # Find and patch site-packages in any active or local virtualenvs dynamically
-VENV_BASES=("$PWD/.venv" "$PWD/venv" "$PWD/env")
+VENV_BASES=()
+# Only check PWD-relative venvs if we're inside a project directory, not $HOME.
+if [ "$PWD" != "$HOME_DIR" ]; then
+    VENV_BASES+=("$PWD/.venv" "$PWD/venv" "$PWD/env")
+fi
 [ -n "$VIRTUAL_ENV" ] && VENV_BASES+=("$VIRTUAL_ENV")
 [ -d "$HOME_DIR/.virtualenvs" ] && VENV_BASES+=("$HOME_DIR/.virtualenvs")
 [ -d "$HOME_DIR/.cache/pypoetry/virtualenvs" ] && VENV_BASES+=("$HOME_DIR/.cache/pypoetry/virtualenvs")

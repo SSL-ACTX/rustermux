@@ -67,39 +67,40 @@ else
     EXIT_CODE=$?
 fi
 
-# Post-execution hook: Auto-patch toolchain binaries if any update/install command was run
-case "$*" in
-    *update*|*install*|*add*|*default*|*toolchain*)
-        echo "Post-execution hook: Auto-patching toolchain binaries..."
-        
-        # If the binary patcher script is available in the cargo bin, use it
-        if [ -f "$CARGO_BIN/patch.sh" ]; then
-            while read -r toolchain_dir; do
-                if [ -d "$toolchain_dir" ]; then
-                    "$CARGO_BIN/patch.sh" "$toolchain_dir"
-                fi
-            done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
-        else
-            # Fallback inline patching logic if patch.sh is not found
-            PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-            GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
-            RPATH="$GLIBC_PREFIX/lib"
-            INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
-            INTERPRETER="${INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
-            
-            while read -r toolchain_dir; do
-                for f in "$toolchain_dir"/*; do
-                    if [ -f "$f" ] && [ -x "$f" ]; then
-                        if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
-                            patchelf --set-interpreter "$INTERPRETER" \
-                                     --set-rpath "$RPATH" \
-                                     "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true
-                        fi
+# Post-execution hook: only meaningful when invoked as rustup, not as cargo/rustfmt/etc.
+if [ "$(basename "$0")" = "rustup" ]; then
+    case "$*" in
+        *update*|*install*|*add*|*default*|*toolchain*)
+            echo "Post-execution hook: Auto-patching toolchain binaries..."
+
+            if [ -f "$CARGO_BIN/patch.sh" ]; then
+                while read -r toolchain_dir; do
+                    if [ -d "$toolchain_dir" ]; then
+                        "$CARGO_BIN/patch.sh" "$toolchain_dir"
                     fi
-                done
-            done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
-        fi
-        ;;
-esac
+                done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
+            else
+                # Fallback inline patching logic if patch.sh is not found
+                PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+                GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
+                RPATH="$GLIBC_PREFIX/lib"
+                INTERPRETER=$(find "$RPATH" -maxdepth 1 -name "ld-linux-*.so.*" 2>/dev/null | head -n 1)
+                INTERPRETER="${INTERPRETER:-$GLIBC_PREFIX/lib/ld-linux-aarch64.so.1}"
+
+                while read -r toolchain_dir; do
+                    for f in "$toolchain_dir"/*; do
+                        if [ -f "$f" ] && [ -x "$f" ]; then
+                            if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ] && ! patchelf --print-interpreter "$f" 2>/dev/null | grep -q "glibc" ; then
+                                patchelf --set-interpreter "$INTERPRETER" \
+                                         --set-rpath "$RPATH" \
+                                         "$f" 2>/dev/null && echo "  Patched: $(basename "$f")" || true
+                            fi
+                        fi
+                    done
+                done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
+            fi
+            ;;
+    esac
+fi
 
 exit $EXIT_CODE

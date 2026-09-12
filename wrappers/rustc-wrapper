@@ -1,0 +1,25 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# wrappers/rustc-wrapper - Termux compiler wrapper with sccache and warning filter
+# 1. Integrates sccache when available for dependency caching.
+# 2. Filters noisy "hard linking files in incremental cache failed" warnings on Android.
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+
+# Set up FIFO to filter stderr without blocking or discarding exit status
+pipe=$(mktemp -u "$PREFIX/tmp/rustc_status.XXXXXX")
+mkfifo "$pipe"
+grep -v -F "hard linking files in the incremental compilation cache failed" < "$pipe" >&2 &
+filter_pid=$!
+
+if command -v sccache >/dev/null 2>&1; then
+    sccache "$@" 2> "$pipe"
+else
+    "$@" 2> "$pipe"
+fi
+EXIT_CODE=$?
+
+exec 2>&-
+wait "$filter_pid" 2>/dev/null || true
+rm -f "$pipe"
+
+exit $EXIT_CODE

@@ -17,7 +17,8 @@ warn()   { printf "${_B}${_Y}warning${_0}: %s\n" "$1" >&2; }
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 HOME_DIR="${HOME:-/data/data/com.termux/files/home}"
-CARGO_BIN_DIR="$HOME_DIR/.cargo/bin"
+CARGO_HOME="${CARGO_HOME:-$HOME_DIR/.cargo}"
+CARGO_BIN_DIR="$CARGO_HOME/bin"
 
 # 1. Manage sitecustomize.py and _sysconfigdata symlinks for platform spoofing
 find "$PREFIX/lib" -maxdepth 2 -type d -name "python3.*" 2>/dev/null | while read -r py_dir; do
@@ -249,6 +250,8 @@ if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     exit 1
 fi
 
+BIN_NAME="$(basename "$0")"
+
 # Detect whether RUSTUP_REAL is 32-bit ARM or 64-bit ARM (aarch64)
 # If 32-bit ARM ELF, run through qemu-arm emulator
 ELF_CLASS=$(file -b "$RUSTUP_REAL" 2>/dev/null || echo "")
@@ -256,16 +259,40 @@ if echo "$ELF_CLASS" | grep -q "32-bit"; then
     if command -v qemu-arm >/dev/null 2>&1; then
         GLIBC32_PATH="$GLIBC_PREFIX/lib32"
         [ -d "$GLIBC32_PATH" ] || GLIBC32_PATH="$GLIBC_PREFIX"
-        qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
-        EXIT_CODE=$?
+        if [ "$BIN_NAME" = "rustc" ]; then
+            pipe=$(mktemp -u "$PREFIX/tmp/rustc_status.XXXXXX")
+            mkfifo "$pipe"
+            grep -v -F "hard linking files in the incremental compilation cache failed" < "$pipe" >&2 &
+            filter_pid=$!
+            qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@" 2> "$pipe"
+            EXIT_CODE=$?
+            exec 2>&-
+            wait "$filter_pid" 2>/dev/null || true
+            rm -f "$pipe"
+        else
+            qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
+            EXIT_CODE=$?
+        fi
     else
         err "32-bit ARM requires qemu-arm — pkg install qemu-user-arm"
         exit 1
     fi
 else
     # 64-bit ARM (aarch64) - preserve argv[0] via bash's exec -a
-    bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
-    EXIT_CODE=$?
+    if [ "$BIN_NAME" = "rustc" ]; then
+        pipe=$(mktemp -u "$PREFIX/tmp/rustc_status.XXXXXX")
+        mkfifo "$pipe"
+        grep -v -F "hard linking files in the incremental compilation cache failed" < "$pipe" >&2 &
+        filter_pid=$!
+        bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@" 2> "$pipe"
+        EXIT_CODE=$?
+        exec 2>&-
+        wait "$filter_pid" 2>/dev/null || true
+        rm -f "$pipe"
+    else
+        bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
+        EXIT_CODE=$?
+    fi
 fi
 
 # Post-execution hook: only meaningful when invoked as rustup, not as cargo/rustfmt/etc.
@@ -312,3 +339,50 @@ EOF_RUSTUP
         status "Recovered" "rustup wrapper after self-update"
     fi
 fi
+
+# 4. Manage build accelerator integration in ~/.cargo/config.toml
+CARGO_CONFIG="$CARGO_HOME/config.toml"
+if [ -f "$CARGO_CONFIG" ]; then
+    # If rustc-wrapper is installed but not configured, configure it
+    if [ -f "$CARGO_BIN_DIR/rustc-wrapper" ] && ! grep -q "rustc-wrapper" "$CARGO_CONFIG" 2>/dev/null; then
+        sed -i '/^\[build\]/a rustc-wrapper = "'"$CARGO_BIN_DIR"'/rustc-wrapper"' "$CARGO_CONFIG" 2>/dev/null || true
+    fi
+    # If mold is installed and not yet in rustflags, add -fuse-ld=mold
+    if command -v mold >/dev/null 2>&1; then
+        if grep -q "rustflags" "$CARGO_CONFIG" 2>/dev/null && ! grep -q -- "-fuse-ld=mold" "$CARGO_CONFIG" 2>/dev/null; then
+            sed -i 's/rustflags = \[/rustflags = ["-C", "link-arg=-fuse-ld=mold", /' "$CARGO_CONFIG" 2>/dev/null || true
+        fi
+    fi
+    # Ensure profile.dev optimizations are present
+    if ! grep -q '\[profile\.dev\]' "$CARGO_CONFIG" 2>/dev/null; then
+        cat << 'EOF' >> "$CARGO_CONFIG"
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+EOF
+    fi
+fi
+
+# 5. Ensure native C/C++ cross-compilation toolchain shims are active in ~/.cargo/env
+CARGO_ENV="$CARGO_HOME/env"
+if [ -f "$CARGO_ENV" ] && ! grep -q "CC_aarch64_linux_android" "$CARGO_ENV" 2>/dev/null; then
+    cat << 'EOF' >> "$CARGO_ENV"
+
+# Native C/C++ cross-compilation toolchain shims for cc-rs and cmake
+export CC_aarch64_linux_android="$PREFIX/bin/clang"
+export CXX_aarch64_linux_android="$PREFIX/bin/clang++"
+export AR_aarch64_linux_android="$PREFIX/bin/llvm-ar"
+export CFLAGS_aarch64_linux_android="-I$PREFIX/include"
+export CXXFLAGS_aarch64_linux_android="-I$PREFIX/include"
+
+# Auto-tune compiler parallelism for mobile big.LITTLE architectures (avoid thermal throttling)
+if [ -z "$CARGO_BUILD_JOBS" ]; then
+    _CORES=$(nproc 2>/dev/null || echo 4)
+    if [ "$_CORES" -gt 4 ]; then
+        export CARGO_BUILD_JOBS=$(( _CORES > 6 ? 6 : _CORES ))
+    fi
+fi
+EOF
+fi
+

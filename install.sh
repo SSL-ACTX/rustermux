@@ -51,6 +51,7 @@ if [ "$IS_ARM32" -eq 1 ]; then
 fi
 MISSING_PKGS=()
 
+# Check and install required prerequisites
 for pkg in "${REQUIRED_PKGS[@]}"; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
         MISSING_PKGS+=("$pkg")
@@ -67,6 +68,20 @@ if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     pkg install -y "${MISSING_PKGS[@]}"
 else
     status "Verified" "all prerequisites installed"
+fi
+
+# Optional acceleration packages (sccache for compilation caching, mold for fast linking)
+OPTIONAL_PKGS=(sccache mold)
+MISSING_OPTIONAL=()
+for pkg in "${OPTIONAL_PKGS[@]}"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+        MISSING_OPTIONAL+=("$pkg")
+    fi
+done
+
+if [ ${#MISSING_OPTIONAL[@]} -gt 0 ]; then
+    status "Optional" "installing accelerators: ${MISSING_OPTIONAL[*]}"
+    pkg install -y "${MISSING_OPTIONAL[@]}" 2>/dev/null || true
 fi
 
 # Verify that packages are successfully installed
@@ -161,6 +176,7 @@ install_file "patch.sh" "$CARGO_BIN_DIR/patch.sh"
 install_file "wrappers/rustup" "$CARGO_BIN_DIR/rustup"
 install_file "wrappers/auto-patcher.sh" "$CARGO_BIN_DIR/auto-patcher.sh"
 install_file "wrappers/cargo-audit" "$CARGO_BIN_DIR/cargo-audit-wrapper"
+install_file "wrappers/rustc-wrapper" "$CARGO_BIN_DIR/rustc-wrapper"
 
 # 6. Patch the initial suite
 status "Patching" "initial binaries"
@@ -196,23 +212,48 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export CARGO_BUILD_TARGET="${CARGO_BUILD_TARGET:-aarch64-linux-android}"
 export PYO3_CONFIG_FILE="${PYO3_CONFIG_FILE:-$HOME/.cargo/pyo3.config}"
+
+# Native C/C++ cross-compilation toolchain shims for cc-rs and cmake
+export CC_aarch64_linux_android="$PREFIX/bin/clang"
+export CXX_aarch64_linux_android="$PREFIX/bin/clang++"
+export AR_aarch64_linux_android="$PREFIX/bin/llvm-ar"
+export CFLAGS_aarch64_linux_android="-I$PREFIX/include"
+export CXXFLAGS_aarch64_linux_android="-I$PREFIX/include"
+
+# Auto-tune compiler parallelism for mobile big.LITTLE architectures (avoid thermal throttling)
+if [ -z "$CARGO_BUILD_JOBS" ]; then
+    _CORES=$(nproc 2>/dev/null || echo 4)
+    if [ "$_CORES" -gt 4 ]; then
+        export CARGO_BUILD_JOBS=$(( _CORES > 6 ? 6 : _CORES ))
+    fi
+fi
 # GLIBC_PREFIX/bin is intentionally NOT added to PATH to avoid glibc coreutils
 # shadowing native Termux tools (libc.so there is a linker script, not an ELF).
 EOF
 fi
 
-# Ensure global config.toml has native Android target configuration
+# Ensure global config.toml has native Android target configuration and caching
 CARGO_CONFIG="$CARGO_BIN/config.toml"
 if [ ! -f "$CARGO_CONFIG" ]; then
     status "Configuring" "$CARGO_CONFIG"
+    if command -v mold >/dev/null 2>&1; then
+        RUSTFLAGS='["-C", "link-arg=-fuse-ld=mold", "-C", "link-arg=-Wl,-rpath,'"$PREFIX"'/lib", "-C", "link-arg=-Wl,--enable-new-dtags"]'
+    else
+        RUSTFLAGS='["-C", "link-arg=-Wl,-rpath,'"$PREFIX"'/lib", "-C", "link-arg=-Wl,--enable-new-dtags"]'
+    fi
     cat << EOF > "$CARGO_CONFIG"
 [build]
 target = "$ANDROID_TARGET"
+rustc-wrapper = "$CARGO_BIN_DIR/rustc-wrapper"
 incremental = false
 
 [target.$ANDROID_TARGET]
 linker = "$PREFIX/bin/clang"
-rustflags = ["-C", "link-arg=-Wl,-rpath,$PREFIX/lib", "-C", "link-arg=-Wl,--enable-new-dtags"]
+rustflags = $RUSTFLAGS
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
 EOF
 fi
 

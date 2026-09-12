@@ -53,6 +53,8 @@ if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     exit 1
 fi
 
+BIN_NAME="$(basename "$0")"
+
 # Detect whether RUSTUP_REAL is 32-bit ARM or 64-bit ARM (aarch64)
 # If 32-bit ARM ELF, run through qemu-arm emulator
 ELF_CLASS=$(file -b "$RUSTUP_REAL" 2>/dev/null || echo "")
@@ -60,16 +62,40 @@ if echo "$ELF_CLASS" | grep -q "32-bit"; then
     if command -v qemu-arm >/dev/null 2>&1; then
         GLIBC32_PATH="$GLIBC_PREFIX/lib32"
         [ -d "$GLIBC32_PATH" ] || GLIBC32_PATH="$GLIBC_PREFIX"
-        qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
-        EXIT_CODE=$?
+        if [ "$BIN_NAME" = "rustc" ]; then
+            pipe=$(mktemp -u "$PREFIX/tmp/rustc_status.XXXXXX")
+            mkfifo "$pipe"
+            grep -v -F "hard linking files in the incremental compilation cache failed" < "$pipe" >&2 &
+            filter_pid=$!
+            qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@" 2> "$pipe"
+            EXIT_CODE=$?
+            exec 2>&-
+            wait "$filter_pid" 2>/dev/null || true
+            rm -f "$pipe"
+        else
+            qemu-arm -0 "$0" -L "$GLIBC32_PATH" "$RUSTUP_REAL" "$@"
+            EXIT_CODE=$?
+        fi
     else
         err "32-bit ARM requires qemu-arm — pkg install qemu-user-arm"
         exit 1
     fi
 else
     # 64-bit ARM (aarch64) - preserve argv[0] via bash's exec -a
-    bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
-    EXIT_CODE=$?
+    if [ "$BIN_NAME" = "rustc" ]; then
+        pipe=$(mktemp -u "$PREFIX/tmp/rustc_status.XXXXXX")
+        mkfifo "$pipe"
+        grep -v -F "hard linking files in the incremental compilation cache failed" < "$pipe" >&2 &
+        filter_pid=$!
+        bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@" 2> "$pipe"
+        EXIT_CODE=$?
+        exec 2>&-
+        wait "$filter_pid" 2>/dev/null || true
+        rm -f "$pipe"
+    else
+        bash -c 'exec -a "$0" "'"$RUSTUP_REAL"'" "$@"' "$0" "$@"
+        EXIT_CODE=$?
+    fi
 fi
 
 # Post-execution hook: only meaningful when invoked as rustup, not as cargo/rustfmt/etc.

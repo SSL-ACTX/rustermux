@@ -383,6 +383,10 @@ if [ -z "$CARGO_BUILD_JOBS" ]; then
         export CARGO_BUILD_JOBS=$(( _CORES > 6 ? 6 : _CORES ))
     fi
 fi
+
+# Mobile-safe disk cache cap for sccache (default 2GB instead of 10GB)
+export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-2G}"
+export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}"
 EOF
 fi
 

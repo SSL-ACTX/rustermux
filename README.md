@@ -74,6 +74,9 @@ source ~/.cargo/env
 ## Features
 
 - **Automated Setup**: Installs Termux Glibc dependencies, downloads the compiler, patches the compiler interpreter, and configures the environment.
+- **Build Acceleration & Caching**: Integrates `sccache` for global crate caching, `mold` for fast linking, and provides a warning-free `rustc-wrapper` for incremental builds on Android.
+- **Mobile Hardware Tuning**: Automatically tunes compilation thread concurrency (`CARGO_BUILD_JOBS`) for mobile big.LITTLE architectures and configures lean unpacked dev profiles (`debug = 1`) to eliminate link-time OOM kills.
+- **Native C/C++ Shims**: Pre-configures `cc-rs` and `cmake` cross-compilation environment variables (`CC`, `CXX`, `AR`, `CFLAGS`) so crates with native C dependencies compile out of the box.
 - **Self-Healing Patcher**: Post-execution hooks automatically intercept updates (`rustup update` or `rustup self update`) and patch newly downloaded executables.
 - **Incremental Caching**: Binary patching uses modification timestamps (`mtime`) caching to avoid rescanning unchanged compiler binaries, running in less than 5 milliseconds.
 - **Python Integration**: Maturin wrapper automatically fixes `RUNPATH` headers on Python native extension `.so` outputs.
@@ -120,6 +123,7 @@ rustermux/
 ├── LICENSE-APACHE         # Apache 2.0 License
 ├── wrappers/
 │   ├── rustup             # Rustup entry point wrapper with post-exec hooks
+│   ├── rustc-wrapper      # Compiler wrapper for sccache and warning suppression
 │   ├── maturin            # Maturin wrapper for Python native extensions
 │   ├── cargo-audit        # cargo-audit wrapper (bypasses Android JVM panic via git)
 │   └── auto-patcher.sh    # Startup helper to repair sitecustomize & self-updates

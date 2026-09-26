@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# wrappers/maturin - Wrapper script for maturin to run glibc binary and patch build outputs
+# wrappers/maturin - Wrapper script for maturin to run binary, normalize target triples, patch wheels & extensions
 
 unset LD_PRELOAD
 export CARGO_INCREMENTAL=0
@@ -10,33 +10,209 @@ GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
 export PATH="$GLIBC_PREFIX/bin:$PATH"
 
-# Run the real maturin binary
-"$PREFIX/bin/maturin-real" "$@"
-EXIT_CODE=$?
+REAL_MATURIN="$PREFIX/bin/maturin-real"
+if [ ! -x "$REAL_MATURIN" ]; then
+    REAL_MATURIN="$(command -v maturin-real 2>/dev/null || true)"
+fi
+if [ -z "$REAL_MATURIN" ] || [ ! -x "$REAL_MATURIN" ]; then
+    REAL_MATURIN="$PREFIX/bin/maturin"
+fi
+
+# Detect if "develop" subcommand is requested
+IS_DEVELOP=0
+SKIP_INSTALL_ALREADY=0
+ARGS=()
+
+for arg in "$@"; do
+    if [ "$arg" = "develop" ]; then
+        IS_DEVELOP=1
+    elif [ "$arg" = "--skip-install" ]; then
+        SKIP_INSTALL_ALREADY=1
+    fi
+    ARGS+=("$arg")
+done
+
+if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
+    # In Termux/Android, real maturin develop fails during pip install because of the android wheel tag.
+    # Run with --skip-install first so artifacts are built into the package directory, then we patch and install.
+    "$REAL_MATURIN" "${ARGS[@]}" --skip-install
+    EXIT_CODE=$?
+else
+    "$REAL_MATURIN" "$@"
+    EXIT_CODE=$?
+fi
 
 if [ $EXIT_CODE -eq 0 ]; then
-    # Automatically patch RPATH/RUNPATH and extension naming of compiled Python extensions
-    find . -maxdepth 5 -name "*.so" 2>/dev/null | while read -r f; do
-        if [ -f "$f" ] && [ -x "$f" ]; then
-            if [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ]; then
-                patchelf --set-rpath "$PREFIX/lib" "$f" 2>/dev/null && \
-                echo "[Maturin Wrapper] Automatically patched RUNPATH of: $(basename "$f")" || true
+    # Run Python normalization & patching for ELF libraries, symlinks, and wheel packages
+    python3 - << 'PY_EOF'
+import os
+import sys
+import glob
+import re
+import subprocess
+import zipfile
+import tempfile
+import hashlib
+import base64
 
-                # Fix libc++.so linkage if required
-                if patchelf --print-needed "$f" 2>/dev/null | grep -q "^libc++\.so$"; then
-                    patchelf --replace-needed libc++.so libc++_shared.so "$f" 2>/dev/null || true
-                fi
+PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+PREFIX_LIB = os.path.join(PREFIX, "lib")
 
-                # Auto-create linux_aarch64 and generic .so symlinks if android-android naming was generated
-                dir_path=$(dirname "$f")
-                base_name=$(basename "$f")
-                if echo "$base_name" | grep -q "aarch64-android-android\.so"; then
-                    linux_name=$(echo "$base_name" | sed 's/aarch64-android-android/aarch64-linux-android/g')
-                    [ -e "$dir_path/$linux_name" ] || ln -sf "$base_name" "$dir_path/$linux_name" 2>/dev/null || true
-                fi
+TAG_TRIPLE_MAP = [
+    # (Wheel tag regex, Linux wheel tag, Android SO fragment, Linux SO fragment)
+    (r'android_[0-9]+_arm64_v8a|android_[0-9]+_aarch64', 'linux_aarch64', 'aarch64-android-android', 'aarch64-linux-android'),
+    (r'android_[0-9]+_armeabi_v7a|android_[0-9]+_armv7l|android_[0-9]+_armeabi', 'linux_armv7l', 'arm-android-android', 'arm-linux-androideabi'),
+    (r'android_[0-9]+_x86_64', 'linux_x86_64', 'x86_64-android-android', 'x86_64-linux-android'),
+    (r'android_[0-9]+_x86|android_[0-9]+_i686', 'linux_i686', 'i686-android-android', 'i686-linux-android'),
+]
+
+SO_REPLACEMENTS = [
+    ('aarch64-android-android', 'aarch64-linux-android'),
+    ('armv7-android-android', 'armv7-linux-androideabi'),
+    ('arm-android-android', 'arm-linux-androideabi'),
+    ('x86_64-android-android', 'x86_64-linux-android'),
+    ('i686-android-android', 'i686-linux-android'),
+]
+
+def patch_elf(fpath):
+    try:
+        subprocess.run(["patchelf", "--set-rpath", PREFIX_LIB, fpath], check=False, stderr=subprocess.DEVNULL)
+        res = subprocess.run(["patchelf", "--print-needed", fpath], capture_output=True, text=True, check=False)
+        if "libc++.so" in res.stdout:
+            subprocess.run(["patchelf", "--replace-needed", "libc++.so", "libc++_shared.so", fpath], check=False, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def patch_local_so_files():
+    for root, dirs, files in os.walk("."):
+        if ".git" in root or ".venv" in root or "venv" in root:
+            continue
+        for f in files:
+            if f.endswith(".so"):
+                fpath = os.path.join(root, f)
+                patch_elf(fpath)
+                
+                # Check for android-android naming and create compatible symlinks
+                for old_part, new_part in SO_REPLACEMENTS:
+                    if old_part in f:
+                        linux_name = f.replace(old_part, new_part)
+                        target = os.path.join(root, linux_name)
+                        if not os.path.exists(target):
+                            try:
+                                os.symlink(f, target)
+                            except OSError:
+                                pass
+                        # Also create generic base.so if needed
+                        base_mod = f.split(".")[0] + ".so"
+                        base_target = os.path.join(root, base_mod)
+                        if not os.path.exists(base_target):
+                            try:
+                                os.symlink(f, base_target)
+                            except OSError:
+                                pass
+
+def patch_wheel(whl_path):
+    base = os.path.basename(whl_path)
+    matched = None
+    new_base = base
+    for pattern, linux_tag, old_so, new_so in TAG_TRIPLE_MAP:
+        if re.search(pattern, base):
+            new_base = re.sub(pattern, linux_tag, base)
+            matched = (linux_tag, old_so, new_so)
+            break
+            
+    if not matched and not base.endswith(".whl"):
+        return None
+
+    out_dir = os.path.dirname(whl_path)
+    new_whl_path = os.path.join(out_dir, new_base)
+    
+    with zipfile.ZipFile(whl_path, "r") as zin, tempfile.TemporaryDirectory() as tmpdir:
+        zin.extractall(tmpdir)
+        
+        record_file = None
+        wheel_file = None
+        
+        for root, dirs, files in os.walk(tmpdir):
+            for f in files:
+                fpath = os.path.join(root, f)
+                if f == "RECORD":
+                    record_file = fpath
+                elif f == "WHEEL":
+                    wheel_file = fpath
+                elif f.endswith(".so"):
+                    patch_elf(fpath)
+                    if matched and matched[1] in f:
+                        new_fname = f.replace(matched[1], matched[2])
+                        new_fpath = os.path.join(root, new_fname)
+                        os.rename(fpath, new_fpath)
+                        
+        if wheel_file and matched:
+            with open(wheel_file, "r", encoding="utf-8") as wf:
+                wcontent = wf.read()
+            wcontent = re.sub(r"Tag: (.*)-(?:android_[^\s]+)", rf"Tag: \1-{matched[0]}", wcontent)
+            with open(wheel_file, "w", encoding="utf-8") as wf:
+                wf.write(wcontent)
+                
+        if record_file:
+            records = []
+            for root, dirs, files in os.walk(tmpdir):
+                for f in files:
+                    fpath = os.path.join(root, f)
+                    relpath = os.path.relpath(fpath, tmpdir)
+                    if relpath.endswith(".dist-info/RECORD"):
+                        continue
+                    with open(fpath, "rb") as rf:
+                        data = rf.read()
+                    digest = hashlib.sha256(data).digest()
+                    b64hash = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+                    records.append(f"{relpath},sha256={b64hash},{len(data)}")
+            records.append(f"{os.path.relpath(record_file, tmpdir)},,")
+            with open(record_file, "w", encoding="utf-8") as rf:
+                rf.write("\n".join(records) + "\n")
+                
+        with zipfile.ZipFile(new_whl_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for root, dirs, files in os.walk(tmpdir):
+                for f in files:
+                    fpath = os.path.join(root, f)
+                    relpath = os.path.relpath(fpath, tmpdir)
+                    zout.write(fpath, relpath)
+                    
+    print(f"[Maturin Wrapper] Patched wheel: {new_base}")
+    return new_whl_path
+
+# 1. Patch all local .so files
+patch_local_so_files()
+
+# 2. Patch all wheels in target/wheels or current output
+for whl in glob.glob("target/wheels/*.whl") + glob.glob("**/*.whl", recursive=True):
+    if "android" in os.path.basename(whl):
+        patch_wheel(whl)
+PY_EOF
+
+    # If maturin develop was called without --skip-install, install into current active python/venv
+    if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
+        PY_BIN=""
+        if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+            PY_BIN="$VIRTUAL_ENV/bin/python"
+        elif [ -x ".venv/bin/python" ]; then
+            PY_BIN=".venv/bin/python"
+        elif [ -x "venv/bin/python" ]; then
+            PY_BIN="venv/bin/python"
+        else
+            PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+        fi
+
+        if [ -n "$PY_BIN" ]; then
+            # If a patched wheel exists, install it
+            WHL=$(find target/wheels -name "*linux_*.whl" 2>/dev/null | tail -n 1)
+            if [ -n "$WHL" ] && [ -f "$WHL" ]; then
+                "$PY_BIN" -m pip install --no-deps --force-reinstall "$WHL" >/dev/null 2>&1 || true
+            else
+                "$PY_BIN" -m pip install --no-build-isolation --no-deps -e . >/dev/null 2>&1 || true
             fi
         fi
-    done
+    fi
 fi
 
 exit $EXIT_CODE

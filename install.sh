@@ -177,6 +177,7 @@ install_file "wrappers/rustup" "$CARGO_BIN_DIR/rustup"
 install_file "wrappers/auto-patcher.sh" "$CARGO_BIN_DIR/auto-patcher.sh"
 install_file "wrappers/cargo-audit" "$CARGO_BIN_DIR/cargo-audit-wrapper"
 install_file "wrappers/rustc-wrapper" "$CARGO_BIN_DIR/rustc-wrapper"
+install_file "wrappers/maturin" "$CARGO_BIN_DIR/maturin-wrapper"
 
 # 6. Patch the initial suite
 status "Patching" "initial binaries"
@@ -188,6 +189,15 @@ for toolchain_dir in "$HOME_DIR"/.rustup/toolchains/*/bin; do
         "$CARGO_BIN_DIR/patch.sh" "$toolchain_dir"
     fi
 done
+
+# Wrap maturin if already installed in PREFIX/bin
+PREFIX_MATURIN="$PREFIX/bin/maturin"
+if [ -f "$PREFIX_MATURIN" ] && [ "$(head -c 4 "$PREFIX_MATURIN" 2>/dev/null)" = $'\x7fELF' ]; then
+    status "Wrapping" "maturin"
+    mv "$PREFIX_MATURIN" "$PREFIX/bin/maturin-real"
+    cp "$CARGO_BIN_DIR/maturin-wrapper" "$PREFIX_MATURIN"
+    chmod +x "$PREFIX_MATURIN"
+fi
 
 # Wrap cargo-audit if already installed (cargo-audit uses reqwest+rustls-platform-verifier
 # which panics on Android; our wrapper uses git to fetch the advisory DB instead)

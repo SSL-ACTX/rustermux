@@ -119,35 +119,67 @@ for entry in "${BINARIES[@]}"; do
     IFS="|" read -r bin_path real_name <<< "$entry"
     if [ -f "$bin_path" ] && [ -x "$bin_path" ]; then
         if [ "$(head -c 4 "$bin_path" 2>/dev/null)" = $'\x7fELF' ]; then
-            if patchelf --print-interpreter "$bin_path" 2>/dev/null | grep -q "glibc"; then
-                dir_path=$(dirname "$bin_path")
-                real_path="$dir_path/$real_name"
-                mv "$bin_path" "$real_path"
-                cat << EOF > "$bin_path"
+            dir_path=$(dirname "$bin_path")
+            real_path="$dir_path/$real_name"
+            wrapper_src="$CARGO_BIN_DIR/$(basename "$bin_path")-wrapper"
+            mv "$bin_path" "$real_path"
+            if [ -f "$wrapper_src" ]; then
+                cp "$wrapper_src" "$bin_path"
+            elif [ -f "$SCRIPT_DIR/wrappers/maturin" ]; then
+                cp "$SCRIPT_DIR/wrappers/maturin" "$bin_path"
+            elif [ -f "$HOME_DIR/projects/rustermux-srn/wrappers/maturin" ]; then
+                cp "$HOME_DIR/projects/rustermux-srn/wrappers/maturin" "$bin_path"
+            else
+                cat << 'EOF_MATURIN' > "$bin_path"
 #!/data/data/com.termux/files/usr/bin/bash
 unset LD_PRELOAD
 export CARGO_INCREMENTAL=0
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
-export PATH="$GLIBC_PREFIX/bin:\$PATH"
+export PATH="$GLIBC_PREFIX/bin:$PATH"
 
-"$PREFIX/bin/maturin-real" "\$@"
-EXIT_CODE=\$?
+REAL_MATURIN="$PREFIX/bin/maturin-real"
+[ -x "$REAL_MATURIN" ] || REAL_MATURIN="$(command -v maturin-real 2>/dev/null || echo "$PREFIX/bin/maturin")"
 
-if [ \$EXIT_CODE -eq 0 ]; then
-    find python -name "*.so" 2>/dev/null | while read -r f; do
-        if [ -f "\$f" ] && [ -x "\$f" ]; then
-            if [ "\$(head -c 4 "\$f" 2>/dev/null)" = $'\x7fELF' ]; then
-                patchelf --set-rpath "$PREFIX/lib" "\$f" 2>/dev/null && \\
-                echo "[Maturin Wrapper] Automatically patched RUNPATH of: \$(basename "\$f")" || true
-            fi
+IS_DEVELOP=0
+SKIP_INSTALL_ALREADY=0
+ARGS=()
+for arg in "$@"; do
+    [ "$arg" = "develop" ] && IS_DEVELOP=1
+    [ "$arg" = "--skip-install" ] && SKIP_INSTALL_ALREADY=1
+    ARGS+=("$arg")
+done
+
+if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
+    "$REAL_MATURIN" "${ARGS[@]}" --skip-install
+    EXIT_CODE=$?
+else
+    "$REAL_MATURIN" "$@"
+    EXIT_CODE=$?
+fi
+
+if [ $EXIT_CODE -eq 0 ]; then
+    find . -maxdepth 5 -name "*.so" 2>/dev/null | while read -r f; do
+        if [ -f "$f" ] && [ -x "$f" ] && [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ]; then
+            patchelf --set-rpath "$PREFIX/lib" "$f" 2>/dev/null || true
+            dir_path=$(dirname "$f")
+            base_name=$(basename "$f")
+            for old_part in "aarch64-android-android" "arm-android-android" "armv7-android-android" "x86_64-android-android" "i686-android-android"; do
+                if echo "$base_name" | grep -q "$old_part"; then
+                    new_part=$(echo "$old_part" | sed -e 's/android-android/linux-android/g' -e 's/arm-android-android/arm-linux-androideabi/g' -e 's/armv7-android-android/armv7-linux-androideabi/g')
+                    linux_name=$(echo "$base_name" | sed "s/$old_part/$new_part/g")
+                    [ -e "$dir_path/$linux_name" ] || ln -sf "$base_name" "$dir_path/$linux_name" 2>/dev/null || true
+                fi
+            done
         fi
     done
 fi
-
-exit \$EXIT_CODE
-EOF
-                chmod +x "$bin_path"
+exit $EXIT_CODE
+EOF_MATURIN
             fi
+            chmod +x "$bin_path"
+            status "Wrapped" "$(basename "$bin_path")"
         fi
     fi
 done

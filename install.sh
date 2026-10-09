@@ -227,8 +227,8 @@ export PYO3_CONFIG_FILE="${PYO3_CONFIG_FILE:-$HOME/.cargo/pyo3.config}"
 export CC_aarch64_linux_android="$PREFIX/bin/clang"
 export CXX_aarch64_linux_android="$PREFIX/bin/clang++"
 export AR_aarch64_linux_android="$PREFIX/bin/llvm-ar"
-export CFLAGS_aarch64_linux_android="-I$PREFIX/include"
-export CXXFLAGS_aarch64_linux_android="-I$PREFIX/include"
+export CFLAGS_aarch64_linux_android="-I$PREFIX/include -D__ANDROID_MIN_SDK_VERSION__=24"
+export CXXFLAGS_aarch64_linux_android="-I$PREFIX/include -D__ANDROID_MIN_SDK_VERSION__=24"
 
 # Auto-tune compiler parallelism for mobile big.LITTLE architectures (avoid thermal throttling)
 if [ -z "$CARGO_BUILD_JOBS" ]; then
@@ -264,6 +264,10 @@ incremental = false
 [target.$ANDROID_TARGET]
 linker = "$PREFIX/bin/clang"
 rustflags = $RUSTFLAGS
+
+[env]
+CFLAGS_aarch64_linux_android = "-I$PREFIX/include -D__ANDROID_MIN_SDK_VERSION__=24"
+CXXFLAGS_aarch64_linux_android = "-I$PREFIX/include -D__ANDROID_MIN_SDK_VERSION__=24"
 
 [profile.dev]
 debug = 1

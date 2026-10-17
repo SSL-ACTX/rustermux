@@ -26,6 +26,7 @@ CARGO_BIN="$CARGO_HOME/bin"
 
 # Automatically load Rustermux environment if not already loaded
 if [ -f "$CARGO_HOME/env" ]; then
+    # shellcheck source=/dev/null
     . "$CARGO_HOME/env"
 fi
 RUSTUP_REAL="$CARGO_BIN/rustup-real"
@@ -106,7 +107,9 @@ fi
 # Post-execution hook: only meaningful when invoked as rustup, not as cargo/rustfmt/etc.
 if [ "$(basename "$0")" = "rustup" ]; then
     case "$*" in
-        *update*|*install*|*add*|*default*|*toolchain*)
+        *list*|*check*|*show*|*which*|*dump*|*doc*|*man*)
+            ;;
+        *update*|*install*|*add*|*toolchain\ link*)
             status "Patching" "toolchain binaries"
 
             if ! command -v patchelf >/dev/null 2>&1; then
@@ -118,7 +121,6 @@ if [ "$(basename "$0")" = "rustup" ]; then
                     fi
                 done < <(find "$RUSTUP_HOME/toolchains" -type d -name "bin" 2>/dev/null)
             else
-                # Fallback inline patching logic if patch.sh is not found
                 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
                 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
                 RPATH="$GLIBC_PREFIX/lib"

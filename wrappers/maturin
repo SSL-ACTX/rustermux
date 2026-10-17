@@ -1,5 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# wrappers/maturin - Wrapper script for maturin to run binary, normalize target triples, patch wheels & extensions
+# wrappers/maturin - Configurable wrapper for maturin on Termux
+# Handles environment isolation, recursion prevention, subcommand parsing,
+# target triple normalization, ELF patching, wheel repacking, and post-develop install.
+# Configuration variables:
+#   RUSTERMUX_MATURIN_REAL: path to real maturin binary
+#   RUSTERMUX_PATCH_SO: patch local .so files (default: 1)
+#   RUSTERMUX_PATCH_WHEELS: repack wheels (default: 1)
+#   RUSTERMUX_REPLACE_LIBCXX: replace libc++.so with libc++_shared.so (default: 1)
+#   RUSTERMUX_RPATH: custom RPATH (default: $PREFIX/lib)
+#   RUSTERMUX_QUIET: suppress informational wrapper messages (default: 0)
 
 unset LD_PRELOAD
 export CARGO_INCREMENTAL=0
@@ -7,48 +16,137 @@ export CARGO_INCREMENTAL=0
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
 
-export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
+export SSL_CERT_FILE="${SSL_CERT_FILE:-$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt}"
 export PATH="$GLIBC_PREFIX/bin:$PATH"
 
-REAL_MATURIN="$PREFIX/bin/maturin-real"
-if [ ! -x "$REAL_MATURIN" ]; then
-    REAL_MATURIN="$(command -v maturin-real 2>/dev/null || true)"
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    _B='\033[1m' _G='\033[92m' _Y='\033[33m' _R='\033[31m' _0='\033[0m'
+else
+    _B='' _G='' _Y='' _R='' _0=''
 fi
-if [ -z "$REAL_MATURIN" ] || [ ! -x "$REAL_MATURIN" ]; then
-    REAL_MATURIN="$PREFIX/bin/maturin"
+log_info() { [ "${RUSTERMUX_QUIET:-0}" -eq 1 ] || printf "${_B}${_G}%16s${_0} %s\n" "$1" "$2" >&2; }
+log_warn() { printf "${_B}${_Y}warning${_0}: %s\n" "$1" >&2; }
+log_err()  { printf "${_B}${_R}error${_0}: %s\n" "$1" >&2; }
+
+# Prevent recursion by inspecting canonical executable path
+SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+REAL_MATURIN="${RUSTERMUX_MATURIN_REAL:-}"
+
+if [ -n "$REAL_MATURIN" ] && [ -x "$REAL_MATURIN" ]; then
+    REAL_MATURIN_RESOLVED="$(readlink -f "$REAL_MATURIN" 2>/dev/null || echo "$REAL_MATURIN")"
+    if [ "$REAL_MATURIN_RESOLVED" = "$SELF_PATH" ]; then
+        log_err "RUSTERMUX_MATURIN_REAL points to this wrapper script ($SELF_PATH). Aborting to prevent infinite loop."
+        exit 1
+    fi
+else
+    REAL_MATURIN=""
+    CANDIDATES=(
+        "$PREFIX/bin/maturin-real"
+        "$(command -v maturin-real 2>/dev/null || true)"
+        "$HOME/.cargo/bin/maturin-real"
+    )
+    for cand in "${CANDIDATES[@]}"; do
+        if [ -n "$cand" ] && [ -x "$cand" ]; then
+            cand_res="$(readlink -f "$cand" 2>/dev/null || echo "$cand")"
+            if [ "$cand_res" != "$SELF_PATH" ]; then
+                REAL_MATURIN="$cand"
+                break
+            fi
+        fi
+    done
+
+    if [ -z "$REAL_MATURIN" ]; then
+        while IFS= read -r path_bin; do
+            if [ -n "$path_bin" ] && [ -x "$path_bin" ]; then
+                path_res="$(readlink -f "$path_bin" 2>/dev/null || echo "$path_bin")"
+                if [ "$path_res" != "$SELF_PATH" ]; then
+                    REAL_MATURIN="$path_bin"
+                    break
+                fi
+            fi
+        done < <(which -a maturin 2>/dev/null || true)
+    fi
 fi
 
-# Detect if "develop" subcommand is requested
+if [ -z "$REAL_MATURIN" ] || [ ! -x "$REAL_MATURIN" ]; then
+    log_err "could not find underlying real maturin binary ('maturin-real')."
+    log_err "Please ensure maturin is installed or set RUSTERMUX_MATURIN_REAL."
+    exit 127
+fi
+
 IS_DEVELOP=0
 SKIP_INSTALL_ALREADY=0
-ARGS=()
+CUSTOM_OUT_DIR=""
+PASSTHROUGH_ARGS=()
+SUBCOMMAND=""
 
-for arg in "$@"; do
-    if [ "$arg" = "develop" ]; then
-        IS_DEVELOP=1
-    elif [ "$arg" = "--skip-install" ]; then
-        SKIP_INSTALL_ALREADY=1
-    fi
-    ARGS+=("$arg")
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--out)
+            CUSTOM_OUT_DIR="$2"
+            PASSTHROUGH_ARGS+=("$1" "$2")
+            shift 2
+            ;;
+        --out=*)
+            CUSTOM_OUT_DIR="${1#*=}"
+            PASSTHROUGH_ARGS+=("$1")
+            shift 1
+            ;;
+        --skip-install)
+            SKIP_INSTALL_ALREADY=1
+            PASSTHROUGH_ARGS+=("$1")
+            shift 1
+            ;;
+        -*)
+            PASSTHROUGH_ARGS+=("$1")
+            shift 1
+            ;;
+        *)
+            if [ -z "$SUBCOMMAND" ]; then
+                SUBCOMMAND="$1"
+                if [ "$SUBCOMMAND" = "develop" ]; then
+                    IS_DEVELOP=1
+                fi
+            fi
+            PASSTHROUGH_ARGS+=("$1")
+            shift 1
+            ;;
+    esac
 done
 
 if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
-    # In Termux/Android, real maturin develop fails during pip install because of the android wheel tag.
-    # Run with --skip-install first so artifacts are built into the package directory, then we patch and install.
-    "$REAL_MATURIN" "${ARGS[@]}" --skip-install
+    "$REAL_MATURIN" "${PASSTHROUGH_ARGS[@]}" --skip-install
     EXIT_CODE=$?
 else
-    "$REAL_MATURIN" "$@"
+    "$REAL_MATURIN" "${PASSTHROUGH_ARGS[@]}"
     EXIT_CODE=$?
 fi
 
-if [ $EXIT_CODE -eq 0 ]; then
-    # Run Python normalization & patching for ELF libraries, symlinks, and wheel packages
-    python3 - << 'PY_EOF'
+if [ $EXIT_CODE -ne 0 ]; then
+    exit $EXIT_CODE
+fi
+
+PY_INTERP=""
+if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+    PY_INTERP="$VIRTUAL_ENV/bin/python"
+elif [ -x ".venv/bin/python" ]; then
+    PY_INTERP=".venv/bin/python"
+elif [ -x "venv/bin/python" ]; then
+    PY_INTERP="venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PY_INTERP="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+    PY_INTERP="$(command -v python)"
+fi
+
+if [ -n "$PY_INTERP" ]; then
+    RUSTERMUX_OUT_DIR="$CUSTOM_OUT_DIR" \
+    "$PY_INTERP" - << 'PY_EOF'
 import os
 import sys
 import glob
 import re
+import shutil
 import subprocess
 import zipfile
 import tempfile
@@ -56,10 +154,26 @@ import hashlib
 import base64
 
 PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
-PREFIX_LIB = os.path.join(PREFIX, "lib")
+PREFIX_LIB = os.environ.get("RUSTERMUX_RPATH", os.path.join(PREFIX, "lib"))
+ENABLE_PATCH_SO = os.environ.get("RUSTERMUX_PATCH_SO", "1") != "0"
+ENABLE_PATCH_WHEELS = os.environ.get("RUSTERMUX_PATCH_WHEELS", "1") != "0"
+ENABLE_REPLACE_LIBCXX = os.environ.get("RUSTERMUX_REPLACE_LIBCXX", "1") != "0"
+CUSTOM_OUT_DIR = os.environ.get("RUSTERMUX_OUT_DIR", "").strip()
+QUIET = os.environ.get("RUSTERMUX_QUIET", "0") == "1"
+
+HAVE_PATCHELF = shutil.which("patchelf") is not None
+
+def log(action, msg):
+    if not QUIET:
+        print(f"\033[1m\033[92m{action:>16}\033[0m {msg}", file=sys.stderr)
+
+def warn(msg):
+    print(f"\033[1m\033[33mwarning\033[0m: {msg}", file=sys.stderr)
+
+if not HAVE_PATCHELF and (ENABLE_PATCH_SO or ENABLE_PATCH_WHEELS):
+    warn("patchelf not found in PATH; RPATH & soname adjustments skipped. (run 'pkg install patchelf-glibc')")
 
 TAG_TRIPLE_MAP = [
-    # (Wheel tag regex, Linux wheel tag, Android SO fragment, Linux SO fragment)
     (r'android_[0-9]+_arm64_v8a|android_[0-9]+_aarch64', 'linux_aarch64', 'aarch64-android-android', 'aarch64-linux-android'),
     (r'android_[0-9]+_armeabi_v7a|android_[0-9]+_armv7l|android_[0-9]+_armeabi', 'linux_armv7l', 'arm-android-android', 'arm-linux-androideabi'),
     (r'android_[0-9]+_x86_64', 'linux_x86_64', 'x86_64-android-android', 'x86_64-linux-android'),
@@ -75,24 +189,27 @@ SO_REPLACEMENTS = [
 ]
 
 def patch_elf(fpath):
+    if not HAVE_PATCHELF:
+        return
     try:
         subprocess.run(["patchelf", "--set-rpath", PREFIX_LIB, fpath], check=False, stderr=subprocess.DEVNULL)
-        res = subprocess.run(["patchelf", "--print-needed", fpath], capture_output=True, text=True, check=False)
-        if "libc++.so" in res.stdout:
-            subprocess.run(["patchelf", "--replace-needed", "libc++.so", "libc++_shared.so", fpath], check=False, stderr=subprocess.DEVNULL)
+        if ENABLE_REPLACE_LIBCXX:
+            res = subprocess.run(["patchelf", "--print-needed", fpath], capture_output=True, text=True, check=False)
+            if "libc++.so" in res.stdout:
+                subprocess.run(["patchelf", "--replace-needed", "libc++.so", "libc++_shared.so", fpath], check=False, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
 def patch_local_so_files():
+    if not ENABLE_PATCH_SO:
+        return
     for root, dirs, files in os.walk("."):
-        if ".git" in root or ".venv" in root or "venv" in root:
+        if any(ignored in root for ignored in [".git", ".venv", "venv", "__pycache__"]):
             continue
         for f in files:
             if f.endswith(".so"):
                 fpath = os.path.join(root, f)
                 patch_elf(fpath)
-                
-                # Check for android-android naming and create compatible symlinks
                 for old_part, new_part in SO_REPLACEMENTS:
                     if old_part in f:
                         linux_name = f.replace(old_part, new_part)
@@ -102,7 +219,6 @@ def patch_local_so_files():
                                 os.symlink(f, target)
                             except OSError:
                                 pass
-                        # Also create generic base.so if needed
                         base_mod = f.split(".")[0] + ".so"
                         base_target = os.path.join(root, base_mod)
                         if not os.path.exists(base_target):
@@ -121,7 +237,7 @@ def patch_wheel(whl_path):
             matched = (linux_tag, old_so, new_so)
             break
             
-    if not matched and not base.endswith(".whl"):
+    if not matched:
         return None
 
     out_dir = os.path.dirname(whl_path)
@@ -150,7 +266,7 @@ def patch_wheel(whl_path):
         if wheel_file and matched:
             with open(wheel_file, "r", encoding="utf-8") as wf:
                 wcontent = wf.read()
-            wcontent = re.sub(r"Tag: (.*)-(?:android_[^\s]+)", rf"Tag: \1-{matched[0]}", wcontent)
+            wcontent = re.sub(r"^Tag: (.*)-(?:android_[^\s\r\n]+)$", rf"Tag: \1-{matched[0]}", wcontent, flags=re.MULTILINE)
             with open(wheel_file, "w", encoding="utf-8") as wf:
                 wf.write(wcontent)
                 
@@ -171,47 +287,60 @@ def patch_wheel(whl_path):
             with open(record_file, "w", encoding="utf-8") as rf:
                 rf.write("\n".join(records) + "\n")
                 
-        with zipfile.ZipFile(new_whl_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        temp_whl = os.path.join(out_dir, f".tmp_{new_base}")
+        with zipfile.ZipFile(temp_whl, "w", compression=zipfile.ZIP_DEFLATED) as zout:
             for root, dirs, files in os.walk(tmpdir):
                 for f in files:
                     fpath = os.path.join(root, f)
                     relpath = os.path.relpath(fpath, tmpdir)
                     zout.write(fpath, relpath)
-                    
-    print(f"[Maturin Wrapper] Patched wheel: {new_base}")
+        os.replace(temp_whl, new_whl_path)
+
+    if new_whl_path != whl_path and os.path.exists(whl_path):
+        try:
+            os.remove(whl_path)
+            os.symlink(os.path.basename(new_whl_path), whl_path)
+        except OSError:
+            pass
+
+    log("Patched", f"wheel -> {new_base}")
     return new_whl_path
 
-# 1. Patch all local .so files
 patch_local_so_files()
 
-# 2. Patch all wheels in target/wheels or current output
-for whl in glob.glob("target/wheels/*.whl") + glob.glob("**/*.whl", recursive=True):
-    if "android" in os.path.basename(whl):
-        patch_wheel(whl)
+if ENABLE_PATCH_WHEELS:
+    candidate_dirs = []
+    if CUSTOM_OUT_DIR and os.path.isdir(CUSTOM_OUT_DIR):
+        candidate_dirs.append(CUSTOM_OUT_DIR)
+    if os.path.isdir("target/wheels"):
+        candidate_dirs.append("target/wheels")
+    candidate_dirs.append(".")
+
+    seen_wheels = set()
+    for c_dir in candidate_dirs:
+        for whl in glob.glob(os.path.join(c_dir, "*.whl")):
+            whl_real = os.path.realpath(whl)
+            if whl_real not in seen_wheels and "android" in os.path.basename(whl) and os.path.exists(whl):
+                seen_wheels.add(whl_real)
+                patch_wheel(whl)
 PY_EOF
+fi
 
-    # If maturin develop was called without --skip-install, install into current active python/venv
-    if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
-        PY_BIN=""
-        if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
-            PY_BIN="$VIRTUAL_ENV/bin/python"
-        elif [ -x ".venv/bin/python" ]; then
-            PY_BIN=".venv/bin/python"
-        elif [ -x "venv/bin/python" ]; then
-            PY_BIN="venv/bin/python"
-        else
-            PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
-        fi
-
-        if [ -n "$PY_BIN" ]; then
-            # If a patched wheel exists, install it
-            WHL=$(find target/wheels -name "*linux_*.whl" 2>/dev/null | tail -n 1)
+if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
+    if [ -n "$PY_INTERP" ]; then
+        log_info "Installing" "develop extension into environment ($PY_INTERP)"
+        if ! "$PY_INTERP" -m pip install --no-build-isolation --no-deps -e . ; then
+            log_warn "pip editable install (-e .) returned non-zero. Attempting standard wheel fallback..."
+            WHL=$(find target/wheels -name "*linux_*.whl" 2>/dev/null | head -n 1)
             if [ -n "$WHL" ] && [ -f "$WHL" ]; then
-                "$PY_BIN" -m pip install --no-deps --force-reinstall "$WHL" >/dev/null 2>&1 || true
-            else
-                "$PY_BIN" -m pip install --no-build-isolation --no-deps -e . >/dev/null 2>&1 || true
+                "$PY_INTERP" -m pip install --no-deps --force-reinstall "$WHL" || {
+                    log_err "Failed to install $WHL into $PY_INTERP"
+                    exit 1
+                }
             fi
         fi
+    else
+        log_warn "No python interpreter found to install developed module into."
     fi
 fi
 

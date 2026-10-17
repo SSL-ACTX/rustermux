@@ -22,7 +22,7 @@ if [ -f ~/.cargo/env ]; then
     # shellcheck source=/dev/null
     . ~/.cargo/env
 else
-    warn "~/.cargo/env not found, using current environment"
+    warn "$HOME/.cargo/env not found, using current environment"
 fi
 
 export PATH="$HOME/.cargo/bin:$PATH"

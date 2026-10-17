@@ -139,11 +139,17 @@ if [ "$IS_ARM32" -eq 1 ]; then
     if [ -f "$INTERP" ]; then
         patchelf --set-interpreter "$INTERP" --set-rpath "$GLIBC32_PATH" ./rustup-init-gnu 2>/dev/null || true
     fi
-    # Filter out internal build script probe noise (cargo:rerun-if-env-changed, CC = None, etc.)
-    qemu-arm -L "$GLIBC32_PATH" ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE" 2>&1 | grep -vE '^(cargo:rerun-if-env-changed|CC_|HOST_CC|CC|CRATE_CC|CFLAGS|HOST_CFLAGS)' || true
+    if [ -t 1 ]; then
+        qemu-arm -L "$GLIBC32_PATH" ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE" --target "$ANDROID_TARGET"
+    else
+        qemu-arm -L "$GLIBC32_PATH" ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE" --target "$ANDROID_TARGET" 2>&1 | grep -vE '^(cargo:rerun-if-env-changed|CC_|HOST_CC|CC|CRATE_CC|CFLAGS|HOST_CFLAGS)' || true
+    fi
 else
-    # Run under grun to use glibc on aarch64
-    grun ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE" 2>&1 | grep -vE '^(cargo:rerun-if-env-changed|CC_|HOST_CC|CC|CRATE_CC|CFLAGS|HOST_CFLAGS)' || true
+    if [ -t 1 ]; then
+        grun ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE" --target "$ANDROID_TARGET"
+    else
+        grun ./rustup-init-gnu -y --default-host "$TARGET_TRIPLE" --target "$ANDROID_TARGET" 2>&1 | grep -vE '^(cargo:rerun-if-env-changed|CC_|HOST_CC|CC|CRATE_CC|CFLAGS|HOST_CFLAGS)' || true
+    fi
 fi
 
 # 4. Resolve /proc/self/exe copy bug
@@ -190,11 +196,49 @@ for toolchain_dir in "$HOME_DIR"/.rustup/toolchains/*/bin; do
     fi
 done
 
-# Wrap maturin if already installed in PREFIX/bin
+# Ensure the Android target is installed
+status "Checking" "default target ($ANDROID_TARGET)"
+"$CARGO_BIN_DIR/rustup" target add "$ANDROID_TARGET" >/dev/null 2>&1 || true
+
+# Ensure Termux APT rust dependency is satisfied via lightweight virtual dummy deb
+if command -v dpkg-deb >/dev/null 2>&1 && ! dpkg -s rust >/dev/null 2>&1; then
+    status "Registering" "virtual rust dependency package"
+    DUMMY_DIR="$(mktemp -d)"
+    chmod 755 "$DUMMY_DIR"
+    mkdir -p "$DUMMY_DIR/DEBIAN"
+    chmod 755 "$DUMMY_DIR/DEBIAN"
+    cat << EOF > "$DUMMY_DIR/DEBIAN/control"
+Package: rust-dummy
+Version: 99:999.0.0
+Architecture: all
+Maintainer: Seuriin <https://github.com/SSL-ACTX>
+Provides: rust, cargo
+Section: devel
+Priority: optional
+Description: Virtual dummy package to satisfy Termux APT dependencies without downloading 150MB bionic rust
+EOF
+    chmod 644 "$DUMMY_DIR/DEBIAN/control"
+    DUMMY_DEB="${DUMMY_DIR}.deb"
+    dpkg-deb --build "$DUMMY_DIR" "$DUMMY_DEB" >/dev/null 2>&1 || true
+    if [ -f "$DUMMY_DEB" ]; then
+        dpkg -i "$DUMMY_DEB" >/dev/null 2>&1 || true
+        rm -rf "$DUMMY_DIR" "$DUMMY_DEB"
+    fi
+fi
+
+# Divert and wrap maturin so APT/pkg upgrades can never overwrite our wrapper
 PREFIX_MATURIN="$PREFIX/bin/maturin"
-if [ -f "$PREFIX_MATURIN" ] && [ "$(head -c 4 "$PREFIX_MATURIN" 2>/dev/null)" = $'\x7fELF' ]; then
+if command -v dpkg-divert >/dev/null 2>&1; then
+    if ! dpkg-divert --list "$PREFIX_MATURIN" 2>/dev/null | grep -q "maturin-real"; then
+        status "Diverting" "maturin binary via dpkg-divert"
+        [ -f "$PREFIX_MATURIN-real" ] && rm -f "$PREFIX_MATURIN-real"
+        dpkg-divert --package rustermux --divert "$PREFIX_MATURIN-real" --rename "$PREFIX_MATURIN" 2>/dev/null || true
+    fi
+    cp "$CARGO_BIN_DIR/maturin-wrapper" "$PREFIX_MATURIN"
+    chmod +x "$PREFIX_MATURIN"
+elif [ -f "$PREFIX_MATURIN" ] && [ "$(head -c 4 "$PREFIX_MATURIN" 2>/dev/null)" = $'\x7fELF' ]; then
     status "Wrapping" "maturin"
-    mv "$PREFIX_MATURIN" "$PREFIX/bin/maturin-real"
+    mv "$PREFIX_MATURIN" "$PREFIX_MATURIN-real"
     cp "$CARGO_BIN_DIR/maturin-wrapper" "$PREFIX_MATURIN"
     chmod +x "$PREFIX_MATURIN"
 fi

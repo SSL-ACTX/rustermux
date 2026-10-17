@@ -105,7 +105,34 @@ EOF
     fi
 done
 
-# 2. Manage glibc binaries wrapping (e.g. maturin, cargo-audit)
+# Ensure Termux APT rust dependency remains satisfied without bionic rust
+if command -v dpkg-deb >/dev/null 2>&1 && ! dpkg -s rust >/dev/null 2>&1 && ! dpkg -s rust-dummy >/dev/null 2>&1; then
+    DUMMY_DIR="$(mktemp -d 2>/dev/null || echo "")"
+    if [ -n "$DUMMY_DIR" ] && [ -d "$DUMMY_DIR" ]; then
+        chmod 755 "$DUMMY_DIR"
+        mkdir -p "$DUMMY_DIR/DEBIAN"
+        chmod 755 "$DUMMY_DIR/DEBIAN"
+        cat << EOF > "$DUMMY_DIR/DEBIAN/control"
+Package: rust-dummy
+Version: 99:999.0.0
+Architecture: all
+Maintainer: Seuriin <https://github.com/SSL-ACTX>
+Provides: rust, cargo
+Section: devel
+Priority: optional
+Description: Virtual dummy package to satisfy Termux APT dependencies without downloading 150MB bionic rust
+EOF
+        chmod 644 "$DUMMY_DIR/DEBIAN/control"
+        DUMMY_DEB="${DUMMY_DIR}.deb"
+        dpkg-deb --build "$DUMMY_DIR" "$DUMMY_DEB" >/dev/null 2>&1 || true
+        if [ -f "$DUMMY_DEB" ]; then
+            dpkg -i "$DUMMY_DEB" >/dev/null 2>&1 || true
+            rm -rf "$DUMMY_DIR" "$DUMMY_DEB"
+        fi
+    fi
+fi
+
+# Manage glibc binaries wrapping (e.g. maturin, cargo-audit)
 BINARIES=(
     "$PREFIX/bin/maturin|maturin-real"
 )
@@ -122,7 +149,18 @@ for entry in "${BINARIES[@]}"; do
             dir_path=$(dirname "$bin_path")
             real_path="$dir_path/$real_name"
             wrapper_src="$CARGO_BIN_DIR/$(basename "$bin_path")-wrapper"
-            mv "$bin_path" "$real_path"
+
+            if command -v dpkg-divert >/dev/null 2>&1; then
+                if ! dpkg-divert --list "$bin_path" 2>/dev/null | grep -q "$real_name"; then
+                    [ -f "$real_path" ] && rm -f "$real_path"
+                    dpkg-divert --package rustermux --divert "$real_path" --rename "$bin_path" 2>/dev/null || true
+                else
+                    mv "$bin_path" "$real_path"
+                fi
+            else
+                mv "$bin_path" "$real_path"
+            fi
+
             if [ -f "$wrapper_src" ]; then
                 cp "$wrapper_src" "$bin_path"
             elif [ -f "$SCRIPT_DIR/wrappers/maturin" ]; then
@@ -130,53 +168,11 @@ for entry in "${BINARIES[@]}"; do
             elif [ -f "$HOME_DIR/projects/rustermux-srn/wrappers/maturin" ]; then
                 cp "$HOME_DIR/projects/rustermux-srn/wrappers/maturin" "$bin_path"
             else
-                cat << 'EOF_MATURIN' > "$bin_path"
-#!/data/data/com.termux/files/usr/bin/bash
-unset LD_PRELOAD
-export CARGO_INCREMENTAL=0
-PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-GLIBC_PREFIX="${GLIBC_PREFIX:-$PREFIX/glibc}"
-export SSL_CERT_FILE="$GLIBC_PREFIX/etc/ssl/certs/ca-certificates.crt"
-export PATH="$GLIBC_PREFIX/bin:$PATH"
-
-REAL_MATURIN="$PREFIX/bin/maturin-real"
-[ -x "$REAL_MATURIN" ] || REAL_MATURIN="$(command -v maturin-real 2>/dev/null || echo "$PREFIX/bin/maturin")"
-
-IS_DEVELOP=0
-SKIP_INSTALL_ALREADY=0
-ARGS=()
-for arg in "$@"; do
-    [ "$arg" = "develop" ] && IS_DEVELOP=1
-    [ "$arg" = "--skip-install" ] && SKIP_INSTALL_ALREADY=1
-    ARGS+=("$arg")
-done
-
-if [ "$IS_DEVELOP" -eq 1 ] && [ "$SKIP_INSTALL_ALREADY" -eq 0 ]; then
-    "$REAL_MATURIN" "${ARGS[@]}" --skip-install
-    EXIT_CODE=$?
-else
-    "$REAL_MATURIN" "$@"
-    EXIT_CODE=$?
-fi
-
-if [ $EXIT_CODE -eq 0 ]; then
-    find . -maxdepth 5 -name "*.so" 2>/dev/null | while read -r f; do
-        if [ -f "$f" ] && [ -x "$f" ] && [ "$(head -c 4 "$f" 2>/dev/null)" = $'\x7fELF' ]; then
-            patchelf --set-rpath "$PREFIX/lib" "$f" 2>/dev/null || true
-            dir_path=$(dirname "$f")
-            base_name=$(basename "$f")
-            for old_part in "aarch64-android-android" "arm-android-android" "armv7-android-android" "x86_64-android-android" "i686-android-android"; do
-                if echo "$base_name" | grep -q "$old_part"; then
-                    new_part=$(echo "$old_part" | sed -e 's/android-android/linux-android/g' -e 's/arm-android-android/arm-linux-androideabi/g' -e 's/armv7-android-android/armv7-linux-androideabi/g')
-                    linux_name=$(echo "$base_name" | sed "s/$old_part/$new_part/g")
-                    [ -e "$dir_path/$linux_name" ] || ln -sf "$base_name" "$dir_path/$linux_name" 2>/dev/null || true
+                download_url="${GITHUB_RAW_URL:-https://raw.githubusercontent.com/SSL-ACTX/rustermux/main}/wrappers/maturin"
+                curl -sSf "$download_url" -o "$bin_path" 2>/dev/null || true
+                if [ ! -s "$bin_path" ]; then
+                    cp "$CARGO_BIN_DIR/maturin-wrapper" "$bin_path" 2>/dev/null || true
                 fi
-            done
-        fi
-    done
-fi
-exit $EXIT_CODE
-EOF_MATURIN
             fi
             chmod +x "$bin_path"
             status "Wrapped" "$(basename "$bin_path")"
@@ -330,7 +326,9 @@ fi
 # Post-execution hook: only meaningful when invoked as rustup, not as cargo/rustfmt/etc.
 if [ "$(basename "$0")" = "rustup" ]; then
     case "$*" in
-        *update*|*install*|*add*|*default*|*toolchain*)
+        *list*|*check*|*show*|*which*|*dump*|*doc*|*man*)
+            ;;
+        *update*|*install*|*add*|*toolchain\ link*)
             status "Patching" "toolchain binaries"
 
             if ! command -v patchelf >/dev/null 2>&1; then

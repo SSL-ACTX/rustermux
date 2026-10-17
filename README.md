@@ -2,7 +2,7 @@
 
 # Rustermux
 
-**Official Rustup Toolchains for Termux**
+**Upstream Rustup Toolchain Integration for Termux**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
@@ -17,29 +17,25 @@
 </div>
 
 > [!WARNING]
-> Rustermux patches ELF binaries at the OS level. It is designed for Termux on Android (aarch64) and should not be used on standard Linux systems.
+> Rustermux patches ELF headers to execute GNU toolchains under Termux Glibc on Android (`aarch64`). Do not run this on standard Linux systems.
 
 ---
 
-## Why Rustermux?
+## Overview
 
-Official `rustup` distributes GNU host toolchains but does not support Android as a native host environment. Rustermux provides a compatibility layer that allows the official GNU Rust toolchain distributed by `rustup` to run inside Termux's glibc environment — it does **not** add native Android host support to `rustup` itself.
+Official `rustup` distributes GNU host toolchains (`aarch64-unknown-linux-gnu`) and lacks a native Android host release. Rustermux executes official GNU Rust toolchains inside Termux using Termux Glibc, patches ELF interpreters/RPATH on the fly, and configures the toolchain to compile native Android (`aarch64-linux-android`) binaries.
 
 > [!NOTE]
-> Rustermux uses the official Rust toolchains distributed by `rustup` but relies on binary patching and wrapper scripts. It is an independent community project and is **not affiliated with or officially supported** by the Rust Project or the Termux maintainers.
+> Rustermux runs official upstream toolchains via binary patching and shell wrappers. It is an independent community project and is not affiliated with the Rust Project or Termux.
 
 ---
-
-This repository provides an automated installer and post-execution hook wrapper system to run standard `aarch64-unknown-linux-gnu` (glibc-linked) Rust toolchains natively inside Termux on Android.
-
-Android targets usually crash on Android hosts because of differences in the C library (Bionic vs. Glibc) and preloaded runtime libraries. Rustermux makes native compilation for Android and GNU host execution seamless and stable.
 
 ## Table of Contents
 
-- [Why Rustermux?](#why-rustermux)
+- [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Features](#features)
-- [Why not `pkg install rust`?](#why-not-pkg-install-rust)
+- [Rustermux vs `pkg install rust`](#rustermux-vs-pkg-install-rust)
 - [Limitations](#limitations)
 - [Compatibility](#compatibility)
 - [Project Structure](#project-structure)
@@ -51,19 +47,17 @@ Android targets usually crash on Android hosts because of differences in the C l
 
 ## Quick Start
 
-Clone the repository and run the installer:
-
 ```bash
 git clone https://github.com/SSL-ACTX/rustermux.git && cd rustermux && ./install.sh
 ```
 
-Or run the installation script directly:
+Or install directly:
 
 ```bash
 curl -fsSL https://github.com/SSL-ACTX/rustermux/raw/refs/heads/main/install.sh | bash
 ```
 
-After the installer finishes, reload your environment:
+Load the environment:
 
 ```bash
 source ~/.cargo/env
@@ -73,43 +67,39 @@ source ~/.cargo/env
 
 ## Features
 
-- **Automated Setup**: Installs Termux Glibc dependencies, downloads the compiler, patches the compiler interpreter, and configures the environment.
-- **Build Acceleration & Caching**: Integrates `sccache` for global crate caching, `mold` for fast linking, and provides a warning-free `rustc-wrapper` for incremental builds on Android.
-- **Mobile Hardware Tuning**: Automatically tunes compilation thread concurrency (`CARGO_BUILD_JOBS`) for mobile big.LITTLE architectures and configures lean unpacked dev profiles (`debug = 1`) to eliminate link-time OOM kills.
-- **Native C/C++ Shims**: Pre-configures `cc-rs` and `cmake` cross-compilation environment variables (`CC`, `CXX`, `AR`, `CFLAGS`) so crates with native C dependencies compile out of the box.
-- **Self-Healing Patcher**: Post-execution hooks automatically intercept updates (`rustup update` or `rustup self update`) and patch newly downloaded executables.
-- **Incremental Caching**: Binary patching uses modification timestamps (`mtime`) caching to avoid rescanning unchanged compiler binaries, running in less than 5 milliseconds.
-- **Python Integration**: Maturin wrapper automatically fixes `RUNPATH` headers on Python native extension `.so` outputs.
-- **Fresh Termux Support**: Automatically installs missing tools (`patchelf`, `glibc-runner`, etc.) on a clean Termux environment.
-- **Graceful Fallbacks**: Detects and handles missing tools (`grun`, `glibc`, `patchelf`) with clear, actionable error messages.
+- **Automated Toolchain Setup**: Installs Termux Glibc prerequisites, downloads official `rustup-init`, patches dynamic loaders, and configures Android defaults.
+- **Build Acceleration**: Integrates `sccache` caching and `mold` linker support, suppressing incremental hard-link cache warnings on Android filesystems.
+- **Mobile Resource Tuning**: Caps `CARGO_BUILD_JOBS` based on CPU core count and enables unpacked dev debug info (`debug = 1`) to prevent link-time out-of-memory kills.
+- **Cross-Compilation Toolchain Shims**: Exports `cc-rs` and `cmake` environment variables (`CC`, `CXX`, `AR`, `CFLAGS`) for native C dependencies.
+- **Post-Execution Patching**: Intercepts `rustup update`, `install`, and `target add` to patch newly downloaded ELF binaries automatically.
+- **Performance Cache**: Tracks binary modification timestamps (`mtime`) in `~/.cargo/.patch_cache` to bypass re-patching unchanged files.
+- **Python Maturin Integration**: Normalizes Android wheel tags, sets library `RUNPATH`, and patches native `.so` Python extensions.
+- **APT Conflict Prevention**: Provides a virtual `rust-dummy` package and `dpkg-divert` integration to prevent `pkg install maturin` from pulling the 150MB Termux Bionic Rust package.
 
 ---
 
-## Why not `pkg install rust`?
-
-You'll get this question a lot. Here's the direct answer:
+## Rustermux vs `pkg install rust`
 
 | Feature | `pkg install rust` | Rustermux |
 |---|---|---|
-| Official upstream `rustup` | ❌ | ✅ |
-| Stable / nightly switching | Limited | ✅ |
-| `rustup target add` | ❌ | ✅ |
-| Official toolchain binaries | ❌ (Termux rebuild) | ✅ |
-| Automatic updates via `rustup` | ❌ | ✅ |
-| Works out of the box on Termux | ✅ | ✅ (after install) |
+| Upstream `rustup` | ❌ | ✅ |
+| Stable / Nightly switching | Limited | ✅ |
+| Multi-target support (`rustup target add`) | ❌ | ✅ |
+| Official upstream binaries | ❌ (Termux rebuild) | ✅ |
+| Toolchain self-updates | ❌ | ✅ |
+| Works on Termux | ✅ | ✅ |
 
-`pkg install rust` ships a Termux-recompiled Rust toolchain that lags behind upstream and lacks `rustup` features. Rustermux runs the **actual** official toolchain distributed by the Rust Project — same binaries, same release schedule, same components.
+`pkg install rust` provides a Termux-recompiled Rust package with no `rustup` multi-toolchain support. Rustermux runs official Rust Project releases with full `rustup` channel and target management.
 
 ---
 
 ## Limitations
 
-- Native support for **aarch64 Termux** (64-bit ARM Android).
-- Experimental support for **32-bit ARM** via `qemu-arm` (`RUSTERMUX_ARCH=arm32 ./install.sh`). See [docs/arm32-experimental.md](docs/arm32-experimental.md).
-- Requires Termux's `glibc` packages (`glibc`, `glibc-repo`).
-- Patches upstream Rust binaries at the ELF level and is therefore **unofficial** — not supported by the Rust Project or Termux maintainers.
-- Does **not** provide a native Android host toolchain for `rustup`.
-- Existing Bionic-compiled binaries are completely unaffected by Rustermux.
+- Native support targets **aarch64 Termux** (64-bit ARM Android).
+- Experimental **32-bit ARM** support uses `qemu-arm` (`RUSTERMUX_ARCH=arm32 ./install.sh`). See [docs/arm32-experimental.md](docs/arm32-experimental.md).
+- Requires Termux Glibc packages (`glibc`, `glibc-runner`, `glibc-repo`).
+- Patches binaries at the ELF level; not supported upstream by the Rust Project or Termux.
+- Does not modify existing Bionic-compiled packages in `$PREFIX/bin`.
 
 ---
 
@@ -125,13 +115,15 @@ rustermux/
 │   ├── rustup             # Rustup entry point wrapper with post-exec hooks
 │   ├── rustc-wrapper      # Compiler wrapper for sccache and warning suppression
 │   ├── maturin            # Maturin wrapper for Python native extensions
-│   ├── cargo-audit        # cargo-audit wrapper (bypasses Android JVM panic via git)
-│   └── auto-patcher.sh    # Startup helper to repair sitecustomize & self-updates
+│   ├── cargo-audit        # cargo-audit wrapper (git fallback for advisory DB)
+│   └── auto-patcher.sh    # Startup helper to repair sitecustomize and diversions
+├── packaging/
+│   └── tur/               # Packaging definitions for Termux User Repository (TUR)
 ├── docs/
-│   ├── architecture.md    # Why we use the GNU target and how it works
+│   ├── architecture.md    # Architecture and technical design decisions
 │   ├── arm32-experimental.md # Experimental 32-bit ARM setup guide
-│   ├── troubleshooting.md # Guide to fixing common errors
-│   └── usage.md           # Instructions on building and usage
+│   ├── troubleshooting.md # Root causes and resolutions for common issues
+│   └── usage.md           # Compilation, targets, and toolchain workflows
 └── tests/
     └── validate.sh        # Automated test verification suite
 ```
@@ -140,15 +132,17 @@ rustermux/
 
 ## How It Works
 
-Rustermux uses `patchelf` to rewrite the ELF interpreter (`PT_INTERP`) of each Rust toolchain binary from the standard glibc path (`/lib/ld-linux-aarch64.so.1` or `ld-linux-armhf.so.3`) to the Termux glibc path provided by `glibc-runner`. A post-execution hook wrapper intercepts every `rustup` invocation so that any newly downloaded binaries are automatically patched without user intervention.
+Rustermux rewrites the ELF interpreter (`PT_INTERP`) of GNU Rust toolchain binaries from `/lib/ld-linux-aarch64.so.1` to the Termux Glibc dynamic loader (`$PREFIX/glibc/lib/ld-linux-aarch64.so.1`) using `patchelf`. 
 
-For details, see [docs/architecture.md](docs/architecture.md).
+A wrapper script in `~/.cargo/bin/rustup` intercepts update commands and patches new toolchain components immediately after download. Cargo is configured to output `aarch64-linux-android` binaries linked against Termux's system libraries.
+
+See [docs/architecture.md](docs/architecture.md) for full implementation details.
 
 ---
 
 ## Compatibility
 
-### Android Version
+### Android Versions
 
 | Android Version | Status |
 |----------------|--------|
@@ -157,18 +151,18 @@ For details, see [docs/architecture.md](docs/architecture.md).
 | Android 14 | ⚠️ Untested |
 | Android 15 | ⚠️ Untested |
 
-### Rust Toolchain & Tooling
+### Toolchain & Tooling
 
 | Component | Status |
 |-----------|--------|
-| Stable Rust | ✅ Supported |
-| Nightly Rust | ✅ Supported |
+| Stable Toolchain | ✅ Supported |
+| Nightly Toolchain | ✅ Supported |
 | `rustup update` | ✅ Auto-patched |
 | `rustup self update` | ✅ Auto-patched |
 | `cargo install` | ✅ Supported |
 | `cargo build` | ✅ Supported |
 | `cargo audit` | ✅ Supported (via wrapper) |
-| Maturin | ✅ Supported |
+| Maturin | ✅ Supported (via wrapper) |
 | 32-bit ARM | 🧪 Experimental (`qemu-arm`) |
 
 ---
@@ -177,21 +171,19 @@ For details, see [docs/architecture.md](docs/architecture.md).
 
 | Document | Description |
 |----------|-------------|
-| [architecture.md](docs/architecture.md) | Why we use the GNU target, how the ELF patcher works, and the wrapper hook design |
-| [arm32-experimental.md](docs/arm32-experimental.md) | Experimental 32-bit ARM support using `qemu-arm` |
-| [usage.md](docs/usage.md) | Building projects, running binaries, and Maturin integration |
-| [troubleshooting.md](docs/troubleshooting.md) | Fixing common errors: missing tools, patchelf failures, RUNPATH issues |
+| [architecture.md](docs/architecture.md) | Technical architecture, dynamic linking mechanics, and wrapper hooks |
+| [arm32-experimental.md](docs/arm32-experimental.md) | 32-bit ARM emulation configuration with `qemu-arm` |
+| [usage.md](docs/usage.md) | Target management, cargo configuration, and Python extension workflows |
+| [troubleshooting.md](docs/troubleshooting.md) | Solutions for linker errors, CA certificates, and dynamic loader issues |
 
 ---
 
 ## License
 
-This project is dual-licensed under either:
+Dual-licensed under:
 
 - [MIT License](LICENSE-MIT)
 - [Apache License, Version 2.0](LICENSE-APACHE)
-
-at your option.
 
 ---
 

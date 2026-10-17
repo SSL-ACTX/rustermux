@@ -126,6 +126,15 @@ if [ $EXIT_CODE -ne 0 ]; then
     exit $EXIT_CODE
 fi
 
+# Only perform .so patching and wheel normalization on mutating build subcommands
+case "$SUBCOMMAND" in
+    build|develop|publish)
+        ;;
+    *)
+        exit $EXIT_CODE
+        ;;
+esac
+
 PY_INTERP=""
 if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
     PY_INTERP="$VIRTUAL_ENV/bin/python"
@@ -203,9 +212,18 @@ def patch_elf(fpath):
 def patch_local_so_files():
     if not ENABLE_PATCH_SO:
         return
+    # Guard: do not walk entire user home directory
+    cur_dir = os.path.abspath(".")
+    home_dir = os.path.expanduser("~")
+    if cur_dir == home_dir:
+        return
     for root, dirs, files in os.walk("."):
-        if any(ignored in root for ignored in [".git", ".venv", "venv", "__pycache__"]):
+        # Prevent runaway search by pruning deep or ignored directories
+        depth = root.count(os.sep)
+        if depth > 4:
+            dirs.clear()
             continue
+        dirs[:] = [d for d in dirs if d not in [".git", ".venv", "venv", "__pycache__", "target", "node_modules", "storage"]]
         for f in files:
             if f.endswith(".so"):
                 fpath = os.path.join(root, f)
